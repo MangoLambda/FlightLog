@@ -25,6 +25,7 @@ class RideRepository(private val dao: FlightLogDao) {
     suspend fun ride(id: Long) = dao.ride(id)
     suspend fun pointSnapshot(id: Long) = compactedPoints(id)
     suspend fun jumpSnapshot(id: Long) = dao.jumps(id)
+    suspend fun deleteRide(id: Long): Boolean = dao.deleteFinishedRide(id) > 0
     suspend fun compactedPoints(id: Long): List<TrackPointEntity> {
         val active = dao.trackPoints(id)
         if (active.isNotEmpty()) return active

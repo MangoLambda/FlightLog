@@ -126,6 +126,15 @@ interface FlightLogDao {
     @Query("DELETE FROM trail_sections WHERE trailId = :trailId AND kind NOT IN ('WHOLE_TRAIL', 'MANUAL')")
     suspend fun deleteAutoSections(trailId: Long)
 
+    @Query("DELETE FROM rides WHERE id = :rideId AND state NOT IN ('RECORDING', 'PAUSED')")
+    suspend fun deleteFinishedRide(rideId: Long): Int
+
+    @Query("DELETE FROM telemetry_chunks WHERE rideId = :rideId AND kind = 'MOTION'")
+    suspend fun deleteMotionForRide(rideId: Long): Int
+
+    @Query("DELETE FROM jump_events WHERE rideId = :rideId")
+    suspend fun deleteJumpsForRide(rideId: Long): Int
+
     @Query("DELETE FROM telemetry_chunks WHERE kind = 'MOTION' AND expiresAt IS NOT NULL AND expiresAt < :now AND rideId IN (SELECT DISTINCT rideId FROM spatial_profiles WHERE roughnessScore IS NOT NULL)")
     suspend fun deleteExpiredMotion(now: Long): Int
 

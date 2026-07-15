@@ -231,7 +231,17 @@ class RideProcessor(private val database: FlightLogDatabase) {
         val points = if (activePoints.isNotEmpty()) activePoints else existingGps.flatMap {
             TelemetryCodec.decodeGps(rideId, it.payload, it.checksum)
         }.sortedBy { it.recordedAt }
-        if (points.isEmpty()) return
+        if (points.isEmpty()) {
+            database.withTransaction {
+                dao.deleteMotionForRide(rideId)
+                dao.deleteJumpsForRide(rideId)
+                dao.updateRide(ride.copy(
+                    archivedAt = System.currentTimeMillis(),
+                    analysisVersion = TrailAnalysis.ANALYSIS_VERSION,
+                ))
+            }
+            return
+        }
         val motionChunks = dao.telemetryChunks(rideId).filter { it.kind == TelemetryKind.MOTION }
         val motion = motionChunks.flatMap { TelemetryCodec.decodeMotion(it.payload, it.checksum) }
         val profiles = TrailAnalysis.spatialProfiles(rideId, points, motion, ride.mountingMode)

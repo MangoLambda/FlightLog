@@ -30,6 +30,8 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradle
 
 During a ride, accepted GPS fixes remain ordinary Room rows so the live map can update cheaply. After completion, FlightLog delta-encodes and DEFLATE-compresses GPS data into checksummed, versioned chunks, creates permanent 5 m speed/quality profiles, and removes the redundant point rows. Accelerometer and gyroscope samples are recorded directly into compressed chunks rather than individual database rows. Raw motion is retained for 90 days after a permanent profile has been created; compressed GPS, profiles, trail passes, and section efforts are retained until app data is removed.
 
+If a ride finishes without any recorded GPS positions, review shows a disabled map and a “No data recorded” explanation. Raw motion and sensor-derived jump records for that ride are deleted immediately because they cannot be reliably assigned to a trail.
+
 Trail passes are matched spatially and by direction, independently of the ride Start and Finish controls. Partial passes are supported. A stationary span or long GPS gap invalidates the affected section rather than the entire ride. Bike-mounted recordings expose a relative roughness score. Pocket recordings expose a lower-confidence rider-disturbance score and are never ranked against bike-mounted roughness.
 
 Full backups are user-initiated and account-free. They include sensitive location history and are not encrypted by FlightLog, so they should be stored only in a trusted location. Import validates archive paths, size limits, schemas, numeric ranges, stable identifiers, and telemetry checksums before committing the transaction.

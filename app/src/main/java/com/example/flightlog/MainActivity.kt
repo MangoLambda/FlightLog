@@ -35,7 +35,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -318,6 +320,8 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onOpenJump = vm::openJump,
                         onStatus = vm::setJumpStatus,
                         onShare = { selectedRideId?.let(vm::shareRide) },
+                        onDelete = { selectedRideId?.let(vm::deleteRide) },
+                        deletesReferencedTrail = trails.any { it.canonicalRideId == selectedRideId },
                         onConfigureMap = openMapSettings,
                     )
                     AppScreen.JUMP_DETAIL -> JumpDetailScreen(
@@ -603,42 +607,104 @@ private fun ReviewScreen(
     onOpenJump: (Long) -> Unit,
     onStatus: (Long, JumpStatus) -> Unit,
     onShare: () -> Unit,
+    onDelete: () -> Unit,
+    deletesReferencedTrail: Boolean,
     onConfigureMap: () -> Unit,
 ) {
     if (ride == null) { EmptyCard("Ride unavailable", "This ride could not be loaded."); return }
+    var confirmingDelete by rememberSaveable(ride.id) { mutableStateOf(false) }
+    if (confirmingDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmingDelete = false },
+            icon = { Icon(Icons.Default.DeleteForever, null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Delete this ride?") },
+            text = {
+                Text(
+                    if (deletesReferencedTrail) {
+                        "This permanently deletes the ride, route, jumps, sensor data, and its referenced trail comparison. This cannot be undone."
+                    } else {
+                        "This permanently deletes the ride, route, jumps, sensor data, and section efforts. This cannot be undone."
+                    },
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { confirmingDelete = false; onDelete() },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) { Text("Delete ride") }
+            },
+            dismissButton = { TextButton(onClick = { confirmingDelete = false }) { Text("Cancel") } },
+        )
+    }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text("Review ride") },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-            actions = { IconButton(onClick = onShare) { Icon(Icons.Default.Share, "Export GPX and CSV") } },
+            actions = {
+                IconButton(onClick = onShare) { Icon(Icons.Default.Share, "Export GPX and CSV") }
+                IconButton(onClick = { confirmingDelete = true }) { Icon(Icons.Default.Delete, "Delete ride") }
+            },
             windowInsets = WindowInsets(0, 0, 0, 0),
         )
-        TrailMap(
-            points = points,
-            jumps = jumps,
-            apiKey = mapApiKey,
-            mapStyle = mapStyle,
-            modifier = Modifier.fillMaxWidth().height(280.dp),
-            onConfigureMap = onConfigureMap,
-            fitRoute = true,
-        )
+        Box(Modifier.fillMaxWidth().height(280.dp)) {
+            TrailMap(
+                points = points,
+                jumps = jumps,
+                apiKey = mapApiKey,
+                mapStyle = mapStyle,
+                modifier = Modifier.matchParentSize(),
+                onConfigureMap = onConfigureMap,
+                fitRoute = true,
+            )
+            if (points.isEmpty()) {
+                Box(
+                    Modifier.matchParentSize()
+                        .background(Color.Black.copy(alpha = .76f))
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) awaitPointerEvent().changes.forEach { it.consume() }
+                            }
+                        }
+                        .semantics {
+                            disabled()
+                            contentDescription = "No GPS data recorded"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Icons.Default.LocationOff, null, tint = Color.White.copy(alpha = .8f), modifier = Modifier.size(34.dp))
+                        Text("No data recorded", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text("No GPS route is available for this ride.", color = Color.White.copy(alpha = .72f))
+                    }
+                }
+            }
+        }
         LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                    Metric("DISTANCE", formatDistance(ride.distanceMeters, imperial))
-                    Metric("JUMPS", jumps.count { it.status == JumpStatus.CONFIRMED }.toString())
-                    Metric("AIRTIME", String.format(Locale.US, "%.1fs", jumps.filter { it.status == JumpStatus.CONFIRMED }.sumOf { it.displayFlightSeconds }))
+            if (points.isEmpty()) {
+                item {
+                    EmptyCard(
+                        "No data recorded",
+                        "No usable GPS positions were recorded. Sensor and jump data were discarded because they could not be reliably assigned to the trail.",
+                    )
                 }
-            }
-            val pending = jumps.count { it.status == JumpStatus.PENDING }
-            if (pending > 0) item {
-                Surface(color = Amber.copy(alpha = .18f), shape = RoundedCornerShape(14.dp)) {
-                    Text("$pending jumps need review", Modifier.fillMaxWidth().padding(14.dp), color = Amber, fontWeight = FontWeight.Bold)
+            } else {
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                        Metric("DISTANCE", formatDistance(ride.distanceMeters, imperial))
+                        Metric("JUMPS", jumps.count { it.status == JumpStatus.CONFIRMED }.toString())
+                        Metric("AIRTIME", String.format(Locale.US, "%.1fs", jumps.filter { it.status == JumpStatus.CONFIRMED }.sumOf { it.displayFlightSeconds }))
+                    }
                 }
-            }
-            if (jumps.isEmpty()) item { EmptyCard("No jumps detected", "Rough impacts were filtered and no flight pattern was found.") }
-            items(jumps, key = { it.id }) { jump ->
-                JumpCard(jump, imperial, { onOpenJump(jump.id) }, { onStatus(jump.id, it) })
+                val pending = jumps.count { it.status == JumpStatus.PENDING }
+                if (pending > 0) item {
+                    Surface(color = Amber.copy(alpha = .18f), shape = RoundedCornerShape(14.dp)) {
+                        Text("$pending jumps need review", Modifier.fillMaxWidth().padding(14.dp), color = Amber, fontWeight = FontWeight.Bold)
+                    }
+                }
+                if (jumps.isEmpty()) item { EmptyCard("No jumps detected", "Rough impacts were filtered and no flight pattern was found.") }
+                items(jumps, key = { it.id }) { jump ->
+                    JumpCard(jump, imperial, { onOpenJump(jump.id) }, { onStatus(jump.id, it) })
+                }
             }
         }
     }

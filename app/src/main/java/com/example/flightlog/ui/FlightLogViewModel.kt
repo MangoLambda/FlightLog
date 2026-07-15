@@ -99,6 +99,13 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
         screen.value = AppScreen.JUMP_DETAIL
     }
 
+    fun deleteRide(rideId: Long) = viewModelScope.launch {
+        if (repository.deleteRide(rideId)) {
+            if (selectedRideId.value == rideId) selectedRideId.value = null
+            screen.value = AppScreen.HISTORY
+        }
+    }
+
     fun openTrail(trailId: Long) {
         selectedTrailId.value = trailId
         val trailPasses = passes.value.filter { it.trailId == trailId }
