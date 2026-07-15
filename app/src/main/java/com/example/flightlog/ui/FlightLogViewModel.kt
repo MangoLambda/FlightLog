@@ -1,0 +1,232 @@
+package com.example.flightlog.ui
+
+import android.app.Application
+import android.content.Intent
+import androidx.core.content.FileProvider
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.flightlog.FlightLogApplication
+import com.example.flightlog.data.JumpEventEntity
+import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.MountingMode
+import com.example.flightlog.export.RideExporter
+import com.example.flightlog.export.FlightLogBackup
+import android.net.Uri
+import com.example.flightlog.data.TrailSectionEntity
+import com.example.flightlog.domain.SectionKind
+import com.example.flightlog.domain.SectionState
+import com.example.flightlog.domain.ComparisonMode
+import com.example.flightlog.maps.MapApiKeyStore
+import com.example.flightlog.maps.MapStyle
+import com.example.flightlog.maps.MapStyleStore
+import com.example.flightlog.maps.MapTileCache
+import com.example.flightlog.tracking.RecordingSettingsStore
+import com.example.flightlog.tracking.TrackingState
+import java.io.File
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+enum class AppScreen { RIDE, HISTORY, TRAILS, STATS, SETTINGS, REVIEW, JUMP_DETAIL, TRAIL_DETAIL }
+sealed interface BackupUiState {
+    data object Idle : BackupUiState
+    data object Working : BackupUiState
+    data class Success(val message: String) : BackupUiState
+    data class Error(val message: String) : BackupUiState
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class FlightLogViewModel(application: Application) : AndroidViewModel(application) {
+    private val app = application as FlightLogApplication
+    private val repository = app.repository
+    val rides = repository.rides.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val jumps = repository.jumps.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val trails = repository.trails.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val sections = repository.sections.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val passes = repository.passes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val efforts = repository.efforts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val telemetryBytes = repository.telemetryBytes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
+    val motionBytes = repository.motionBytes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
+    val nextMotionExpiry = repository.nextMotionExpiry.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    val estimatedProfileBytes = repository.estimatedProfileBytes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
+    val live = TrackingState.state
+    val screen = MutableStateFlow(AppScreen.RIDE)
+    val selectedRideId = MutableStateFlow<Long?>(null)
+    val selectedJumpId = MutableStateFlow<Long?>(null)
+    val selectedTrailId = MutableStateFlow<Long?>(null)
+    val selectedPassAId = MutableStateFlow<Long?>(null)
+    val selectedPassBId = MutableStateFlow<Long?>(null)
+    val comparisonMode = MutableStateFlow(ComparisonMode.TREND)
+    val backupState = MutableStateFlow<BackupUiState>(BackupUiState.Idle)
+    val imperial = MutableStateFlow(
+        application.getSharedPreferences("settings", 0).getBoolean("imperial", false),
+    )
+    val recordingSettings = MutableStateFlow(RecordingSettingsStore.read(application))
+    val userMapApiKey = MutableStateFlow(MapApiKeyStore.userKey(application))
+    val effectiveMapApiKey = MutableStateFlow(MapApiKeyStore.effectiveKey(application))
+    val mapStyle = MutableStateFlow(MapStyleStore.read(application))
+    val hasBundledMapApiKey = MapApiKeyStore.hasBundledKey()
+    val tileCacheState = MapTileCache.state
+
+    val selectedPoints = selectedRideId.flatMapLatest { id ->
+        if (id == null) flowOf(emptyList()) else repository.trackPoints(id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val selectedRideJumps = selectedRideId.flatMapLatest { id ->
+        if (id == null) flowOf(emptyList()) else repository.jumps(id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private fun comparisonPoints(passId: MutableStateFlow<Long?>) = combine(passId, passes) { id, all ->
+        all.firstOrNull { it.id == id }?.rideId
+    }.flatMapLatest { rideId -> if (rideId == null) flowOf(emptyList()) else repository.trackPoints(rideId) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val comparisonPointsA = comparisonPoints(selectedPassAId)
+    val comparisonPointsB = comparisonPoints(selectedPassBId)
+
+    fun openRide(rideId: Long) {
+        selectedRideId.value = rideId
+        screen.value = AppScreen.REVIEW
+    }
+
+    fun openJump(jumpId: Long) {
+        selectedJumpId.value = jumpId
+        screen.value = AppScreen.JUMP_DETAIL
+    }
+
+    fun openTrail(trailId: Long) {
+        selectedTrailId.value = trailId
+        val trailPasses = passes.value.filter { it.trailId == trailId }
+        selectedPassAId.value = trailPasses.firstOrNull()?.id
+        selectedPassBId.value = trailPasses.drop(1).firstOrNull()?.id
+        screen.value = AppScreen.TRAIL_DETAIL
+    }
+
+    fun confirmTrail(trailId: Long, name: String, startMeters: Double, endMeters: Double) = viewModelScope.launch {
+        repository.confirmTrail(trailId, name, startMeters, endMeters)
+        app.rideProcessor.rebuildTrail(trailId)
+    }
+    fun confirmSection(sectionId: Long) = viewModelScope.launch { repository.confirmSection(sectionId) }
+    fun updateSection(sectionId: Long, name: String, startMeters: Double, endMeters: Double) = viewModelScope.launch {
+        val trailId = sections.value.firstOrNull { it.id == sectionId }?.trailId
+        repository.updateSection(sectionId, name, startMeters, endMeters)
+        trailId?.let { app.rideProcessor.rebuildTrail(it) }
+    }
+
+    fun addManualSection(trailId: Long, name: String, startMeters: Double, endMeters: Double) = viewModelScope.launch {
+        if (name.isBlank() || startMeters < 0 || endMeters <= startMeters) return@launch
+        app.database.dao().insertSection(TrailSectionEntity(
+            trailId = trailId, name = name.trim().take(80), kind = SectionKind.MANUAL,
+            state = SectionState.CONFIRMED, startMeters = startMeters, endMeters = endMeters,
+        ))
+        app.rideProcessor.rebuildTrail(trailId)
+    }
+
+    fun setJumpStatus(jumpId: Long, status: JumpStatus) = viewModelScope.launch {
+        repository.setJumpStatus(jumpId, status)
+    }
+
+    fun saveJump(jump: JumpEventEntity, flight: Double, height: Double, distance: Double) = viewModelScope.launch {
+        repository.updateJump(jump.copy(
+            correctedFlightSeconds = flight.coerceIn(0.0, 2.5),
+            correctedHeightMeters = height.coerceIn(0.0, 8.0),
+            correctedDistanceMeters = distance.coerceIn(0.0, 50.0),
+            status = JumpStatus.CONFIRMED,
+        ))
+        screen.value = AppScreen.REVIEW
+    }
+
+    fun setImperial(enabled: Boolean) {
+        imperial.value = enabled
+        getApplication<Application>().getSharedPreferences("settings", 0)
+            .edit().putBoolean("imperial", enabled).apply()
+    }
+
+    fun setMountingMode(mode: MountingMode) {
+        RecordingSettingsStore.setMountingMode(getApplication(), mode)
+        recordingSettings.value = recordingSettings.value.copy(mountingMode = mode)
+    }
+
+    fun setMinimumJumpHeight(mode: MountingMode, meters: Float) {
+        RecordingSettingsStore.setMinimumHeight(getApplication(), mode, meters)
+        recordingSettings.value = when (mode) {
+            MountingMode.POCKET -> recordingSettings.value.copy(pocketMinimumHeightMeters = meters)
+            MountingMode.BIKE_MOUNTED -> recordingSettings.value.copy(mountedMinimumHeightMeters = meters)
+        }
+    }
+
+    fun saveThunderforestApiKey(key: String): Boolean {
+        val previousKey = effectiveMapApiKey.value
+        if (!MapApiKeyStore.saveUserKey(getApplication(), key)) return false
+        userMapApiKey.value = MapApiKeyStore.userKey(getApplication())
+        effectiveMapApiKey.value = MapApiKeyStore.effectiveKey(getApplication())
+        if (previousKey.isNotBlank() && previousKey != effectiveMapApiKey.value) {
+            MapTileCache.clear(getApplication())
+        }
+        return true
+    }
+
+    fun clearThunderforestApiKey() {
+        val hadUserKey = userMapApiKey.value.isNotBlank()
+        MapApiKeyStore.clearUserKey(getApplication())
+        userMapApiKey.value = ""
+        effectiveMapApiKey.value = MapApiKeyStore.effectiveKey(getApplication())
+        if (hadUserKey) MapTileCache.clear(getApplication())
+    }
+
+    fun setMapStyle(style: MapStyle) {
+        MapStyleStore.save(getApplication(), style)
+        mapStyle.value = style
+    }
+
+    fun clearMapTileCache() = MapTileCache.clear(getApplication())
+
+    fun setMapTileCacheLimit(megabytes: Int) = MapTileCache.setLimit(getApplication(), megabytes)
+
+    fun refreshMapTileCache() = MapTileCache.refresh(getApplication())
+
+    fun shareRide(rideId: Long) = viewModelScope.launch {
+        val ride = repository.ride(rideId) ?: return@launch
+        val points = repository.pointSnapshot(rideId)
+        val jumps = repository.jumpSnapshot(rideId)
+        val exportDir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
+        val gpx = File(exportDir, "flightlog-ride-$rideId.gpx").apply { writeText(RideExporter.gpx(ride, points)) }
+        val csv = File(exportDir, "flightlog-ride-$rideId-jumps.csv").apply { writeText(RideExporter.jumpCsv(jumps)) }
+        val authority = "${getApplication<Application>().packageName}.files"
+        val uris = arrayListOf(
+            FileProvider.getUriForFile(getApplication(), authority, gpx),
+            FileProvider.getUriForFile(getApplication(), authority, csv),
+        )
+        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = "*/*"
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        getApplication<Application>().startActivity(Intent.createChooser(intent, "Export ride").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    fun exportBackup(uri: Uri) = viewModelScope.launch {
+        backupState.value = BackupUiState.Working
+        backupState.value = runCatching {
+            getApplication<Application>().contentResolver.openOutputStream(uri, "w")?.use { output ->
+                FlightLogBackup(getApplication(), app.database).export(output)
+            } ?: error("Could not open the selected file")
+            BackupUiState.Success("Backup exported")
+        }.getOrElse { BackupUiState.Error(it.message ?: "Backup export failed") }
+    }
+
+    fun importBackup(uri: Uri) = viewModelScope.launch {
+        backupState.value = BackupUiState.Working
+        backupState.value = runCatching {
+            val result = getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
+                FlightLogBackup(getApplication(), app.database).import(input)
+            } ?: error("Could not open the selected file")
+            BackupUiState.Success("Imported ${result.ridesAdded} rides; ${result.duplicateRides} already present")
+        }.getOrElse { BackupUiState.Error(it.message ?: "Backup import failed") }
+    }
+}
