@@ -279,6 +279,7 @@ fun TrailBoundaryEditor(
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close trail editor")
                         }
                     },
+                    colors = flightLogTopAppBarColors(),
                     windowInsets = WindowInsets(0, 0, 0, 0),
                 )
 

@@ -12,8 +12,6 @@ enum class SectionState { SUGGESTED, CONFIRMED }
 enum class RoughnessKind { BIKE_ROUGHNESS, RIDER_DISTURBANCE }
 enum class EffortInvalidReason { STOP, GPS_GAP }
 enum class PauseZoneState { CANDIDATE, AUTOMATIC, USER_LOCKED, DISMISSED }
-enum class ComparisonMode { TREND, A_B, VIRTUAL_BEST }
-
 data class JumpEstimate(
     val flightTimeSeconds: Double,
     val heightMeters: Double,

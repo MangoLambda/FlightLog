@@ -1,10 +1,8 @@
 package com.example.flightlog.ui
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,7 +10,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -23,7 +23,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Merge
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -55,23 +54,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.example.flightlog.data.RideEntity
-import com.example.flightlog.data.SectionEffortEntity
 import com.example.flightlog.data.SpatialProfileEntity
 import com.example.flightlog.data.TrackPointEntity
-import com.example.flightlog.data.TrailPassEntity
 import com.example.flightlog.data.TrailPauseZoneEntity
 import com.example.flightlog.data.TrailSectionEntity
-import com.example.flightlog.domain.ComparisonMode
 import com.example.flightlog.domain.PauseZoneState
 import com.example.flightlog.maps.MapStyle
-import com.example.flightlog.ui.theme.Amber
-import com.example.flightlog.ui.theme.TrailCyan
 import java.util.Locale
-import kotlin.math.roundToInt
 
 internal enum class TrailResultTab { SPLITS, FULL_RUNS }
-internal enum class SplitEffortContext { ALL, NONSTOP }
 
 internal data class PauseZoneDraft(
     val key: Long,
@@ -151,151 +142,6 @@ internal fun SplitRouteScrubber(
     }
 }
 
-@Composable
-internal fun PauseZoneEvidence(zones: List<TrailPauseZoneEntity>, onEdit: () -> Unit) {
-    val active = zones.filter { it.state == PauseZoneState.AUTOMATIC || it.state == PauseZoneState.USER_LOCKED }
-    Card {
-        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Natural pause areas", fontWeight = FontWeight.Bold)
-                TextButton(onClick = onEdit) { Text("Edit splits") }
-            }
-            if (active.isEmpty()) {
-                Text("Ride this trail again to discover natural pause areas.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else active.forEach { zone ->
-                val pause = if (zone.medianPauseMillis > 0) " • median ${formatSplitTime(zone.medianPauseMillis)}" else ""
-                Text(
-                    "${zone.name}: detected on ${zone.supportCount} of ${zone.eligiblePassCount} rides$pause",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-internal fun FullRunsPanel(
-    passes: List<TrailPassEntity>,
-    efforts: List<SectionEffortEntity>,
-    wholeTrailSection: TrailSectionEntity?,
-    splitSections: List<TrailSectionEntity>,
-    mode: ComparisonMode,
-    selectedPassAId: Long?,
-    selectedPassBId: Long?,
-    imperial: Boolean,
-) {
-    val qualified = passes.filter { it.fullRunEligible }.sortedByDescending { it.startedAt }
-    val qualifiedIds = qualified.mapTo(hashSetOf()) { it.id }
-    val wholeEfforts = efforts.filter { it.sectionId == wholeTrailSection?.id && it.passId in qualifiedIds && it.valid }
-        .associateBy { it.passId }
-    val latestPass = qualified.firstOrNull { it.id in wholeEfforts }
-    val latest = latestPass?.let { wholeEfforts[it.id] }
-    val best = wholeEfforts.values.minByOrNull { it.elapsedMillis }
-    val passById = qualified.associateBy { it.id }
-    val aEffort = wholeEfforts[selectedPassAId]
-    val bEffort = wholeEfforts[selectedPassBId]
-    Card {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Full runs", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text("${qualified.size} complete nonstop ${if (qualified.size == 1) "run" else "runs"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            when (mode) {
-                ComparisonMode.A_B -> {
-                    val a = aEffort
-                    val b = bEffort
-                    if (a == null || b == null) Text("Choose two qualified full runs to compare.", color = Amber)
-                    else {
-                        Text("A  ${formatSplitTime(a.elapsedMillis)} • ${formatSplitSpeed(a.averageSpeedMps, imperial)} average", color = TrailCyan)
-                        Text("B  ${formatSplitTime(b.elapsedMillis)} • ${formatSplitSpeed(b.averageSpeedMps, imperial)} average", color = Amber)
-                        Text("Delta ${formatSignedTime(b.elapsedMillis - a.elapsedMillis)}", fontWeight = FontWeight.Bold)
-                    }
-                }
-                ComparisonMode.TREND, ComparisonMode.VIRTUAL_BEST -> {
-                    val displayed = if (mode == ComparisonMode.VIRTUAL_BEST) best else latest
-                    if (displayed == null) Text("No full run yet. Cover the entire trail without a 10-second stop.", color = Amber)
-                    else {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            SplitMetric(if (mode == ComparisonMode.VIRTUAL_BEST) "PERSONAL BEST" else "LATEST", formatSplitTime(displayed.elapsedMillis))
-                            SplitMetric("AVG SPEED", formatSplitSpeed(displayed.averageSpeedMps, imperial))
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            SplitMetric("MAX SPEED", formatSplitSpeed(displayed.maximumSpeedMps, imperial))
-                            SplitMetric("EXIT SPEED", formatSplitSpeed(displayed.exitSpeedMps, imperial))
-                        }
-                        if (displayed.estimated) Text("Estimated across ${formatSplitTime(displayed.bridgedGapMillis)} of bridged GPS", color = Amber)
-                        if (mode == ComparisonMode.TREND && best != null) Text("Personal best ${formatSplitTime(best.elapsedMillis)}", color = MaterialTheme.colorScheme.secondary)
-                        if (mode == ComparisonMode.TREND) {
-                            val now = System.currentTimeMillis()
-                            val recent = wholeEfforts.values.map { it.elapsedMillis.toDouble() }.medianValue()
-                            val windows = listOf("Week" to 7L, "Month" to 30L, "Year" to 365L)
-                            Text(
-                                "Recent ${recent?.toLong()?.let(::formatSplitTime) ?: "—"} • " + windows.joinToString(" • ") { (label, days) ->
-                                    val values = wholeEfforts.values.filter { effort ->
-                                        (passById[effort.passId]?.startedAt ?: 0) >= now - days * 86_400_000L
-                                    }.map { it.elapsedMillis.toDouble() }
-                                    "$label ${values.medianValue()?.toLong()?.let(::formatSplitTime) ?: "—"}"
-                                },
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (mode == ComparisonMode.A_B && aEffort != null && bEffort != null) {
-        val aBreakdown = efforts.filter { it.passId == selectedPassAId && it.sectionId in splitSections.map { section -> section.id } && it.valid }
-        val bBreakdown = efforts.filter { it.passId == selectedPassBId && it.sectionId in splitSections.map { section -> section.id } && it.valid }
-        Card {
-            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Text("Full-run split deltas", fontWeight = FontWeight.Bold)
-                splitSections.forEach { split ->
-                    val a = aBreakdown.firstOrNull { it.sectionId == split.id }
-                    val b = bBreakdown.firstOrNull { it.sectionId == split.id }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(split.name)
-                        Text(
-                            if (a == null || b == null) "—" else formatSignedTime(b.elapsedMillis - a.elapsedMillis),
-                            color = if (a != null && b != null && b.elapsedMillis <= a.elapsedMillis) TrailCyan else Amber,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                }
-                val aTransition = (aEffort.elapsedMillis - aBreakdown.sumOf { it.elapsedMillis }).coerceAtLeast(0)
-                val bTransition = (bEffort.elapsedMillis - bBreakdown.sumOf { it.elapsedMillis }).coerceAtLeast(0)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Through pause zones", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(formatSignedTime(bTransition - aTransition), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-    }
-    if (latestPass != null && latest != null) {
-        val breakdown = efforts.filter { it.passId == latestPass.id && it.sectionId in splitSections.map { section -> section.id } && it.valid }
-        val transitionMillis = (latest.elapsedMillis - breakdown.sumOf { it.elapsedMillis }).coerceAtLeast(0)
-        Card {
-            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Text("Latest full-run breakdown", fontWeight = FontWeight.Bold)
-                splitSections.forEach { split ->
-                    val effort = breakdown.firstOrNull { it.sectionId == split.id }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(split.name)
-                        Text(effort?.let { formatSplitTime(it.elapsedMillis) } ?: "—", fontWeight = FontWeight.Bold)
-                    }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Through pause zones", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(formatSplitTime(transitionMillis), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("End to end", fontWeight = FontWeight.Bold)
-                    Text(formatSplitTime(latest.elapsedMillis), fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PauseZoneEditor(
@@ -322,12 +168,14 @@ internal fun PauseZoneEditor(
         drafts = drafts.map { if (it.key == selectedKey) transform(it) else it }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Surface(Modifier.fillMaxSize().safeDrawingPadding(), color = MaterialTheme.colorScheme.background) {
-            Column(Modifier.fillMaxSize()) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
                 TopAppBar(
                     title = { Text("Edit splits") },
                     navigationIcon = { IconButton(onClick = onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Cancel") } },
                     actions = { TextButton(onClick = { onSave(drafts) }) { Text("Save") } },
+                    colors = flightLogTopAppBarColors(),
+                    windowInsets = WindowInsets(0, 0, 0, 0),
                 )
                 TrailMap(
                     points = profiles.sortedBy { it.distanceMeters }.map(SpatialProfileEntity::asTrackPoint),
@@ -382,7 +230,11 @@ internal fun PauseZoneEditor(
                         )
                         val original = zones.firstOrNull { it.id == draft.entityId }
                         if (original != null) Text(
-                            "Detected on ${original.supportCount} of ${original.eligiblePassCount} rides • ${original.confidence}% confidence",
+                            buildString {
+                                append("Detected on ${original.supportCount} of ${original.eligiblePassCount} rides")
+                                if (original.medianPauseMillis > 0) append(" • median pause ${formatSplitTime(original.medianPauseMillis)}")
+                                append(" • ${original.confidence}% confidence")
+                            },
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -441,15 +293,7 @@ internal fun PauseZoneEditor(
     }
 }
 
-@Composable
-private fun SplitMetric(label: String, value: String) {
-    Column {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-    }
-}
-
-private fun formatSplitTime(millis: Long): String {
+internal fun formatSplitTime(millis: Long): String {
     val totalSeconds = millis / 1_000.0
     val minutes = (totalSeconds / 60).toInt()
     val seconds = totalSeconds - minutes * 60
@@ -457,13 +301,8 @@ private fun formatSplitTime(millis: Long): String {
     else String.format(Locale.US, "%.1fs", seconds)
 }
 
-private fun formatSignedTime(millis: Long): String = (if (millis >= 0) "+" else "−") + formatSplitTime(kotlin.math.abs(millis))
+internal fun formatSignedTime(millis: Long): String = (if (millis >= 0) "+" else "−") + formatSplitTime(kotlin.math.abs(millis))
 
-private fun formatSplitSpeed(mps: Double, imperial: Boolean): String = if (imperial) {
+internal fun formatSplitSpeed(mps: Double, imperial: Boolean): String = if (imperial) {
     String.format(Locale.US, "%.1f mph", mps * 2.23694)
 } else String.format(Locale.US, "%.1f km/h", mps * 3.6)
-
-private fun List<Double>.medianValue(): Double? = if (isEmpty()) null else sorted().let { values ->
-    if (values.size % 2 == 1) values[values.size / 2]
-    else (values[values.size / 2 - 1] + values[values.size / 2]) / 2.0
-}

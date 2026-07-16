@@ -17,7 +17,6 @@ import com.example.flightlog.data.TrailSectionEntity
 import com.example.flightlog.data.TrailPauseZoneEntity
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
-import com.example.flightlog.domain.ComparisonMode
 import com.example.flightlog.maps.MapApiKeyStore
 import com.example.flightlog.maps.MapStyle
 import com.example.flightlog.maps.MapStyleStore
@@ -66,7 +65,6 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     val selectedTrailId = MutableStateFlow<Long?>(null)
     val selectedPassAId = MutableStateFlow<Long?>(null)
     val selectedPassBId = MutableStateFlow<Long?>(null)
-    val comparisonMode = MutableStateFlow(ComparisonMode.TREND)
     val backupState = MutableStateFlow<BackupUiState>(BackupUiState.Idle)
     val imperial = MutableStateFlow(
         application.getSharedPreferences("settings", 0).getBoolean("imperial", false),
@@ -90,13 +88,13 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
         if (id == null) flowOf(emptyList()) else repository.stops(id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    private fun comparisonPoints(passId: MutableStateFlow<Long?>) = combine(passId, passes) { id, all ->
+    private fun comparisonProfiles(passId: MutableStateFlow<Long?>) = combine(passId, passes) { id, all ->
         all.firstOrNull { it.id == id }?.rideId
-    }.flatMapLatest { rideId -> if (rideId == null) flowOf(emptyList()) else repository.trackPoints(rideId) }
+    }.flatMapLatest { rideId -> if (rideId == null) flowOf(emptyList()) else repository.observeSpatialProfiles(rideId) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val comparisonPointsA = comparisonPoints(selectedPassAId)
-    val comparisonPointsB = comparisonPoints(selectedPassBId)
+    val comparisonProfilesA = comparisonProfiles(selectedPassAId)
+    val comparisonProfilesB = comparisonProfiles(selectedPassBId)
 
     val selectedTrailProfiles = combine(selectedTrailId, trails) { trailId, allTrails ->
         allTrails.firstOrNull { it.id == trailId }?.canonicalRideId
@@ -123,7 +121,6 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun openTrail(trailId: Long) {
         selectedTrailId.value = trailId
-        comparisonMode.value = ComparisonMode.TREND
         val trailPasses = passes.value.filter { it.trailId == trailId }
         selectedPassAId.value = trailPasses.firstOrNull()?.id
         selectedPassBId.value = trailPasses.drop(1).firstOrNull()?.id

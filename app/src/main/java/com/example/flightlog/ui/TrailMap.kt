@@ -69,6 +69,7 @@ import org.maplibre.android.style.layers.PropertyFactory.iconRotate
 import org.maplibre.android.style.layers.PropertyFactory.iconRotationAlignment
 import org.maplibre.android.style.layers.PropertyFactory.iconSize
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
+import org.maplibre.android.style.layers.PropertyFactory.lineDasharray
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
 import org.maplibre.android.style.layers.PropertyFactory.lineOpacity
 import org.maplibre.android.style.layers.PropertyFactory.textAllowOverlap
@@ -459,7 +460,7 @@ private fun addRideLayers(style: Style, context: Context) {
     ))
     style.addSource(GeoJsonSource(COMPARISON_ROUTE_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(LineLayer("flightlog-comparison-route-line", COMPARISON_ROUTE_SOURCE).withProperties(
-        lineColor("#FFB84D"), lineWidth(4f),
+        lineColor("#FFB84D"), lineWidth(4f), lineDasharray(arrayOf(2f, 2f)),
     ))
     style.addSource(GeoJsonSource(JUMP_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(CircleLayer("flightlog-jump-points", JUMP_SOURCE).withProperties(
