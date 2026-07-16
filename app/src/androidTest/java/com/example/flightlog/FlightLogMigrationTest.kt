@@ -46,12 +46,18 @@ class FlightLogMigrationTest {
         FrameworkSQLiteOpenHelperFactory().create(configuration).use { it.writableDatabase }
 
         val database = Room.databaseBuilder(context, FlightLogDatabase::class.java, name)
-            .addMigrations(FlightLogDatabase.MIGRATION_1_2).build()
+            .addMigrations(
+                FlightLogDatabase.MIGRATION_1_2,
+                FlightLogDatabase.MIGRATION_2_3,
+                FlightLogDatabase.MIGRATION_3_4,
+                FlightLogDatabase.MIGRATION_4_5,
+            ).build()
         val ride = runBlocking { database.dao().ride(1) }
         val points = runBlocking { database.dao().trackPoints(1) }
         assertNotNull(ride)
         UUID.fromString(ride!!.uuid)
         assertEquals(1, points.size)
+        assertEquals(5, database.openHelper.readableDatabase.version)
         database.close()
     }
 }

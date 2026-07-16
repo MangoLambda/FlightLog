@@ -7,9 +7,11 @@ enum class AggregatePeriod { DAY, SEASON, LIFETIME }
 enum class MountingMode { POCKET, BIKE_MOUNTED }
 enum class TelemetryKind { GPS, MOTION }
 enum class TrailState { CANDIDATE, SUGGESTED, CONFIRMED }
-enum class SectionKind { TURN, ROUGH, MANUAL, WHOLE_TRAIL }
+enum class SectionKind { TURN, ROUGH, MANUAL, WHOLE_TRAIL, SPLIT }
 enum class SectionState { SUGGESTED, CONFIRMED }
 enum class RoughnessKind { BIKE_ROUGHNESS, RIDER_DISTURBANCE }
+enum class EffortInvalidReason { STOP, GPS_GAP }
+enum class PauseZoneState { CANDIDATE, AUTOMATIC, USER_LOCKED, DISMISSED }
 enum class ComparisonMode { TREND, A_B, VIRTUAL_BEST }
 
 data class JumpEstimate(

@@ -4,30 +4,192 @@ import androidx.room.withTransaction
 import com.example.flightlog.data.FlightLogDatabase
 import com.example.flightlog.data.SectionEffortEntity
 import com.example.flightlog.data.SpatialProfileEntity
+import com.example.flightlog.data.StopEventEntity
 import com.example.flightlog.data.TelemetryChunkEntity
 import com.example.flightlog.data.TrackPointEntity
 import com.example.flightlog.data.TrailEntity
 import com.example.flightlog.data.TrailPassEntity
+import com.example.flightlog.data.TrailStopObservationEntity
+import com.example.flightlog.data.TrailPauseZoneEntity
 import com.example.flightlog.data.TrailSectionEntity
 import com.example.flightlog.domain.MountingMode
+import com.example.flightlog.domain.EffortInvalidReason
+import com.example.flightlog.domain.PauseZoneState
 import com.example.flightlog.domain.RoughnessKind
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.domain.TelemetryKind
 import com.example.flightlog.domain.TrailState
 import java.util.UUID
+import java.nio.charset.StandardCharsets
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.pow
 import kotlin.math.sqrt
 
 object TrailAnalysis {
-    const val ANALYSIS_VERSION = 1
+    const val ANALYSIS_VERSION = 4
+    const val EFFORT_VERSION = 4
     const val BIN_METERS = 5.0
     private const val MAX_GPS_ACCURACY_METERS = 25f
     private const val STATIONARY_SPEED_MPS = 0.8
-    private const val INTERRUPTION_MILLIS = 10_000L
+    internal const val INTERRUPTION_MILLIS = 10_000L
+    internal const val GPS_SAMPLE_GAP_MILLIS = 5_000L
+    internal const val MAX_BRIDGEABLE_GAP_MILLIS = 15_000L
+    private const val MAX_BRIDGED_SPEED_MPS = 30.0
+    private const val PAUSE_CLUSTER_METERS = 20.0
+
+    fun stopEvents(
+        rideId: Long,
+        rideUuid: String,
+        points: List<TrackPointEntity>,
+    ): List<StopEventEntity> {
+        val result = mutableListOf<StopEventEntity>()
+        var candidate = mutableListOf<TrackPointEntity>()
+        fun finishCandidate() {
+            if (candidate.size >= 3) {
+                val duration = candidate.last().recordedAt - candidate.first().recordedAt
+                val latitude = candidate.map { it.latitude }.average()
+                val longitude = candidate.map { it.longitude }.average()
+                val accuracy = candidate.map { it.accuracyMeters.toDouble() }.average().toFloat()
+                val radius = candidate.maxOf { coordinateDistanceMeters(latitude, longitude, it.latitude, it.longitude) }
+                if (duration >= INTERRUPTION_MILLIS && radius <= maxOf(15.0, accuracy * 2.0)) {
+                    val startedAt = candidate.first().recordedAt
+                    result += StopEventEntity(
+                        uuid = UUID.nameUUIDFromBytes("$rideUuid:stop:$startedAt".toByteArray(StandardCharsets.UTF_8)).toString(),
+                        rideId = rideId,
+                        startedAt = startedAt,
+                        endedAt = candidate.last().recordedAt,
+                        latitude = latitude,
+                        longitude = longitude,
+                        accuracyMeters = accuracy,
+                        durationMillis = duration,
+                    )
+                }
+            }
+            candidate = mutableListOf()
+        }
+        points.sortedBy { it.recordedAt }.forEach { point ->
+            val usableStationary = point.accuracyMeters <= MAX_GPS_ACCURACY_METERS && point.speedMps < STATIONARY_SPEED_MPS
+            val continuous = candidate.lastOrNull()?.let { point.recordedAt - it.recordedAt <= INTERRUPTION_MILLIS } ?: true
+            if (!usableStationary || !continuous) finishCandidate()
+            if (usableStationary) candidate += point
+        }
+        finishCandidate()
+        return result
+    }
+
+    data class GapAssessment(val distanceMeters: Double, val durationMillis: Long, val bridgeable: Boolean)
+
+    fun gapAssessments(normalized: List<Pair<SpatialProfileEntity, SpatialProfileEntity>>): List<GapAssessment> =
+        normalized.sortedBy { it.first.recordedAt }.zipWithNext().mapNotNull { (a, b) ->
+            val duration = b.first.maximumSampleGapMillis
+            if (duration <= GPS_SAMPLE_GAP_MILLIS) return@mapNotNull null
+            val speed = distance(a.first, b.first) / (duration / 1_000.0).coerceAtLeast(.001)
+            GapAssessment(
+                distanceMeters = b.second.distanceMeters,
+                durationMillis = duration,
+                bridgeable = duration <= MAX_BRIDGEABLE_GAP_MILLIS &&
+                    a.first.accuracyMeters <= MAX_GPS_ACCURACY_METERS &&
+                    b.first.accuracyMeters <= MAX_GPS_ACCURACY_METERS &&
+                    b.second.distanceMeters >= a.second.distanceMeters - 2.0 &&
+                    speed <= MAX_BRIDGED_SPEED_MPS,
+            )
+        }
+
+    fun mapStopObservations(
+        trailId: Long,
+        trailUuid: String,
+        passId: Long,
+        normalized: List<Pair<SpatialProfileEntity, SpatialProfileEntity>>,
+        events: List<StopEventEntity>,
+    ): List<TrailStopObservationEntity> {
+        if (normalized.isEmpty()) return emptyList()
+        val sorted = normalized.sortedBy { it.first.recordedAt }
+        return events.mapNotNull { event ->
+            if (event.endedAt < sorted.first().first.recordedAt || event.startedAt > sorted.last().first.recordedAt) return@mapNotNull null
+            val during = sorted.filter { it.first.recordedAt in event.startedAt..event.endedAt }
+            val nearest = (during.ifEmpty {
+                val midpoint = event.startedAt + event.durationMillis / 2
+                listOfNotNull(sorted.minByOrNull { abs(it.first.recordedAt - midpoint) })
+            })
+            if (nearest.isEmpty()) return@mapNotNull null
+            val anchor = nearest[nearest.size / 2]
+            val separation = coordinateDistanceMeters(event.latitude, event.longitude, anchor.first.latitude, anchor.first.longitude)
+            val corridor = maxOf(15.0, event.accuracyMeters * 2.0, anchor.first.accuracyMeters * 2.0)
+            if (separation > corridor) return@mapNotNull null
+            val distances = nearest.map { it.second.distanceMeters }
+            val center = distances.average()
+            TrailStopObservationEntity(
+                uuid = UUID.nameUUIDFromBytes("$trailUuid:${event.uuid}".toByteArray(StandardCharsets.UTF_8)).toString(),
+                trailId = trailId,
+                passId = passId,
+                stopEventId = event.id,
+                distanceMeters = center,
+                startMeters = distances.minOrNull() ?: center,
+                endMeters = distances.maxOrNull() ?: center,
+                durationMillis = event.durationMillis,
+                confidence = (100 - separation * 2.0 - event.accuracyMeters).toInt().coerceIn(0, 100),
+            )
+        }
+    }
+
+    data class PauseZoneCandidate(
+        val centerMeters: Double,
+        val startMeters: Double,
+        val endMeters: Double,
+        val supportCount: Int,
+        val eligiblePassCount: Int,
+        val confidence: Int,
+        val medianPauseMillis: Long,
+        val active: Boolean,
+    )
+
+    fun pauseZoneCandidates(
+        trail: TrailEntity,
+        observations: List<TrailStopObservationEntity>,
+        passes: List<TrailPassEntity>,
+    ): List<PauseZoneCandidate> {
+        if (observations.isEmpty()) return emptyList()
+        val clusters = mutableListOf<MutableList<TrailStopObservationEntity>>()
+        observations.sortedBy { it.distanceMeters }.forEach { observation ->
+            val cluster = clusters.lastOrNull()
+            if (cluster == null || observation.distanceMeters - cluster.map { it.distanceMeters }.average() > PAUSE_CLUSTER_METERS) {
+                clusters += mutableListOf(observation)
+            } else cluster += observation
+        }
+        return clusters.mapNotNull { rawCluster ->
+            val cluster = rawCluster.groupBy { it.passId }.values.map { passStops ->
+                passStops.maxBy { it.durationMillis }
+            }
+            val center = cluster.map { it.distanceMeters }.median() ?: return@mapNotNull null
+            if (center < trail.startMeters + 30.0 || center > trail.endMeters - 30.0) return@mapNotNull null
+            val eligible = passes.count {
+                it.startMeters <= center - BIN_METERS && it.endMeters >= center + BIN_METERS && !it.hasReversal
+            }
+            val support = cluster.size
+            val required = if (eligible <= 2) 2 else maxOf(2, ceil(eligible * .60).toInt())
+            val rawStart = (cluster.map { it.startMeters }.median() ?: center) - 5.0
+            val rawEnd = (cluster.map { it.endMeters }.median() ?: center) + 5.0
+            val width = (rawEnd - rawStart).coerceIn(10.0, 30.0)
+            val start = (center - width / 2.0).coerceAtLeast(trail.startMeters)
+            val end = (start + width).coerceAtMost(trail.endMeters)
+            val confidence = ((support.toDouble() / eligible.coerceAtLeast(1)) * 70.0 +
+                cluster.map { it.confidence }.average() * .30).toInt().coerceIn(0, 100)
+            PauseZoneCandidate(
+                centerMeters = center,
+                startMeters = end - width,
+                endMeters = end,
+                supportCount = support,
+                eligiblePassCount = eligible,
+                confidence = confidence,
+                medianPauseMillis = cluster.map { it.durationMillis.toDouble() }.median()?.toLong() ?: 0,
+                active = eligible >= 2 && support >= required,
+            )
+        }
+    }
 
     fun spatialProfiles(
         rideId: Long,
@@ -38,11 +200,14 @@ object TrailAnalysis {
         val usable = points.filter { it.accuracyMeters <= MAX_GPS_ACCURACY_METERS }.sortedBy { it.recordedAt }
         if (usable.isEmpty()) return emptyList()
         var distance = 0.0
-        var previous = usable.first()
-        val grouped = linkedMapOf<Int, MutableList<Pair<Double, TrackPointEntity>>>()
+        var previous: TrackPointEntity? = null
+        val grouped = linkedMapOf<Int, MutableList<Triple<Double, TrackPointEntity, Long>>>()
         usable.forEach { point ->
-            if (point !== usable.first()) distance += distance(previous, point)
-            grouped.getOrPut(floor(distance / BIN_METERS).toInt()) { mutableListOf() }.add(distance to point)
+            val prior = previous
+            val sampleGapMillis = prior?.let { (point.recordedAt - it.recordedAt).coerceAtLeast(0) } ?: 0L
+            if (prior != null) distance += distance(prior, point)
+            grouped.getOrPut(floor(distance / BIN_METERS).toInt()) { mutableListOf() }
+                .add(Triple(distance, point, sampleGapMillis))
             previous = point
         }
         val base = grouped.map { (bin, entries) ->
@@ -53,9 +218,11 @@ object TrailAnalysis {
                 recordedAt = entries.map { it.second.recordedAt }.average().toLong(),
                 latitude = entries.map { it.second.latitude }.average(),
                 longitude = entries.map { it.second.longitude }.average(),
+                altitudeMeters = entries.mapNotNull { it.second.altitudeMeters }.takeIf { it.isNotEmpty() }?.average(),
                 speedMps = entries.map { it.second.speedMps }.average(),
                 accuracyMeters = entries.map { it.second.accuracyMeters.toDouble() }.average().toFloat(),
                 observedSpanMillis = entries.maxOf { it.second.recordedAt } - entries.minOf { it.second.recordedAt },
+                maximumSampleGapMillis = entries.maxOf { it.third },
             )
         }
         if (motion.isEmpty() || mountingMode == null) return base
@@ -91,6 +258,21 @@ object TrailAnalysis {
     }
 
     data class Match(val confidence: Int, val normalized: List<Pair<SpatialProfileEntity, SpatialProfileEntity>>)
+
+    fun preservePermanentSignals(
+        rebuilt: List<SpatialProfileEntity>,
+        previous: List<SpatialProfileEntity>,
+    ): List<SpatialProfileEntity> {
+        val previousByBin = previous.associateBy { it.distanceBin }
+        return rebuilt.map { profile ->
+            val prior = previousByBin[profile.distanceBin]
+            if (profile.roughnessScore != null || prior?.roughnessScore == null) profile else profile.copy(
+                roughnessScore = prior.roughnessScore,
+                roughnessKind = prior.roughnessKind,
+                roughnessConfidence = prior.roughnessConfidence,
+            )
+        }
+    }
 
     fun match(candidate: List<SpatialProfileEntity>, canonical: List<SpatialProfileEntity>): Match? {
         if (candidate.size < 20 || canonical.size < 20) return null
@@ -161,19 +343,25 @@ object TrailAnalysis {
         passId: Long,
         section: TrailSectionEntity,
         normalized: List<Pair<SpatialProfileEntity, SpatialProfileEntity>>,
+        stopDistances: List<Double>? = null,
+        gaps: List<GapAssessment> = gapAssessments(normalized),
+        trailStartMeters: Double = 0.0,
     ): SectionEffortEntity? {
         val selected = normalized.filter { (_, canonical) -> canonical.distanceMeters in section.startMeters..section.endMeters }
             .sortedBy { it.second.distanceMeters }
         if (selected.size < 2 || selected.first().second.distanceMeters > section.startMeters + BIN_METERS ||
             selected.last().second.distanceMeters < section.endMeters - BIN_METERS) return null
         val points = selected.map { it.first }
-        var stationaryMillis = 0L
-        var interrupted = points.any { it.observedSpanMillis > INTERRUPTION_MILLIS }
-        points.zipWithNext().forEach { (a, b) ->
-            val gap = b.recordedAt - a.recordedAt
-            if (gap > 5_000) interrupted = true
-            stationaryMillis = if (b.speedMps < STATIONARY_SPEED_MPS) stationaryMillis + gap.coerceAtLeast(0) else 0
-            if (stationaryMillis > INTERRUPTION_MILLIS) interrupted = true
+        val knownStops = stopDistances ?: selected.filter { it.first.observedSpanMillis >= INTERRUPTION_MILLIS }
+            .map { it.second.distanceMeters }
+        val stopDetected = knownStops.any { it in section.startMeters..section.endMeters }
+        val sectionGaps = gaps.filter { it.distanceMeters in section.startMeters..section.endMeters }
+        val gpsGapDetected = sectionGaps.any { !it.bridgeable }
+        val bridgedGapMillis = sectionGaps.filter { it.bridgeable }.sumOf { it.durationMillis }
+        val invalidReason = when {
+            stopDetected -> EffortInvalidReason.STOP
+            gpsGapDetected -> EffortInvalidReason.GPS_GAP
+            else -> null
         }
         val rough = points.mapNotNull { it.roughnessScore }
         val uncertainty = points.map { it.accuracyMeters.toDouble() }.average()
@@ -188,9 +376,13 @@ object TrailAnalysis {
             maximumSpeedMps = points.maxOf { it.speedMps },
             roughnessScore = rough.takeIf { it.isNotEmpty() }?.average(),
             roughnessKind = points.mapNotNull { it.roughnessKind }.firstOrNull(),
-            sampleQuality = (100 - uncertainty * 3).toInt().coerceIn(0, 100),
+            sampleQuality = (100 - uncertainty * 3 - (bridgedGapMillis / 1_000L * 2).coerceAtMost(30)).toInt().coerceIn(0, 100),
             lateralOffsetMeters = offsets.average(), lateralUncertaintyMeters = uncertainty,
-            valid = !interrupted,
+            valid = invalidReason == null,
+            invalidReason = invalidReason,
+            reachedWithoutPriorStop = knownStops.none { it in trailStartMeters..<section.startMeters },
+            estimated = bridgedGapMillis > 0,
+            bridgedGapMillis = bridgedGapMillis,
         )
     }
 
@@ -207,6 +399,12 @@ object TrailAnalysis {
         LocationSample(b.recordedAt, b.latitude, b.longitude, b.accuracyMeters, b.speedMps),
     )
 
+    private fun coordinateDistanceMeters(latitudeA: Double, longitudeA: Double, latitudeB: Double, longitudeB: Double): Double =
+        RideMath.distanceMeters(
+            LocationSample(0, latitudeA, longitudeA, 0f, 0.0),
+            LocationSample(0, latitudeB, longitudeB, 0f, 0.0),
+        )
+
     private fun bearing(a: SpatialProfileEntity, b: SpatialProfileEntity): Double {
         val lat1 = Math.toRadians(a.latitude)
         val lat2 = Math.toRadians(b.latitude)
@@ -218,6 +416,11 @@ object TrailAnalysis {
     }
 
     private fun angularDifference(a: Double, b: Double): Double = abs((b - a + 540) % 360 - 180)
+}
+
+private fun List<Double>.median(): Double? = if (isEmpty()) null else sorted().let { values ->
+    if (values.size % 2 == 1) values[values.size / 2]
+    else (values[values.size / 2 - 1] + values[values.size / 2]) / 2.0
 }
 
 class RideProcessor(private val database: FlightLogDatabase) {
@@ -233,6 +436,7 @@ class RideProcessor(private val database: FlightLogDatabase) {
         }.sortedBy { it.recordedAt }
         if (points.isEmpty()) {
             database.withTransaction {
+                dao.deleteStopEventsForRide(rideId)
                 dao.deleteMotionForRide(rideId)
                 dao.deleteJumpsForRide(rideId)
                 dao.updateRide(ride.copy(
@@ -244,7 +448,12 @@ class RideProcessor(private val database: FlightLogDatabase) {
         }
         val motionChunks = dao.telemetryChunks(rideId).filter { it.kind == TelemetryKind.MOTION }
         val motion = motionChunks.flatMap { TelemetryCodec.decodeMotion(it.payload, it.checksum) }
-        val profiles = TrailAnalysis.spatialProfiles(rideId, points, motion, ride.mountingMode)
+        val previousProfiles = dao.spatialProfiles(rideId)
+        val profiles = TrailAnalysis.preservePermanentSignals(
+            rebuilt = TrailAnalysis.spatialProfiles(rideId, points, motion, ride.mountingMode),
+            previous = previousProfiles,
+        )
+        val stopEvents = TrailAnalysis.stopEvents(rideId, ride.uuid, points)
         database.withTransaction {
             if (existingGps.isEmpty()) {
                 points.chunked(10_000).forEach { chunk ->
@@ -252,6 +461,8 @@ class RideProcessor(private val database: FlightLogDatabase) {
                     dao.insertTelemetryChunk(encoded.toEntity(rideId, TelemetryKind.GPS, expiresAt = null))
                 }
             }
+            dao.deleteStopEventsForRide(rideId)
+            if (stopEvents.isNotEmpty()) dao.insertStopEvents(stopEvents)
             dao.insertSpatialProfiles(profiles)
             dao.updateRide(ride.copy(archivedAt = System.currentTimeMillis(), analysisVersion = TrailAnalysis.ANALYSIS_VERSION))
             dao.deleteTrackPoints(rideId)
@@ -265,16 +476,19 @@ class RideProcessor(private val database: FlightLogDatabase) {
         val trail = dao.allTrails().firstOrNull { it.id == trailId } ?: return
         val canonical = dao.spatialProfiles(trail.canonicalRideId)
         if (canonical.isEmpty()) return
+        val rides = dao.allRides()
         database.withTransaction {
             dao.deletePassesForTrail(trailId)
-            dao.allRides().forEach { ride ->
-                val profiles = dao.spatialProfiles(ride.id)
-                val match = if (ride.id == trail.canonicalRideId) {
-                    TrailAnalysis.Match(100, profiles.map { it to it })
-                } else TrailAnalysis.match(profiles, canonical)
-                if (match != null) createPasses(trailId, ride.id, match)
-            }
+            rides.forEach { createMatchedPasses(trail, canonical, it, includeEfforts = false) }
+            syncPauseZones(trail)
+            syncSplitSections(trail)
+            dao.deletePassesForTrail(trailId)
+            rides.forEach { createMatchedPasses(trail, canonical, it, includeEfforts = true) }
         }
+    }
+
+    suspend fun rebuildAllTrails() {
+        dao.allTrails().forEach { rebuildTrail(it.id) }
     }
 
     private suspend fun analyzeTrail(rideId: Long, profiles: List<SpatialProfileEntity>) {
@@ -293,7 +507,7 @@ class RideProcessor(private val database: FlightLogDatabase) {
             ))
             val sections = TrailAnalysis.suggestedSections(trailId, profiles)
             sections.forEach { dao.insertSection(it) }
-            createPasses(trailId, rideId, TrailAnalysis.Match(100, profiles.map { it to it }))
+            rebuildTrail(trailId)
             return
         }
         val (trail, canonical, trailMatch) = match
@@ -328,11 +542,29 @@ class RideProcessor(private val database: FlightLogDatabase) {
                 .forEach { dao.insertSection(it) }
             rebuildTrail(trail.id)
         } else {
-            createPasses(trail.id, rideId, trailMatch)
+            rebuildTrail(trail.id)
         }
     }
 
-    private suspend fun createPasses(trailId: Long, rideId: Long, match: TrailAnalysis.Match) {
+    private suspend fun createMatchedPasses(
+        trail: TrailEntity,
+        canonical: List<SpatialProfileEntity>,
+        ride: com.example.flightlog.data.RideEntity,
+        includeEfforts: Boolean,
+    ) {
+        val profiles = dao.spatialProfiles(ride.id)
+        val match = if (ride.id == trail.canonicalRideId) {
+            TrailAnalysis.Match(100, profiles.map { it to it })
+        } else TrailAnalysis.match(profiles, canonical)
+        if (match != null) createPasses(trail, ride, match, includeEfforts)
+    }
+
+    private suspend fun createPasses(
+        trail: TrailEntity,
+        ride: com.example.flightlog.data.RideEntity,
+        match: TrailAnalysis.Match,
+        includeEfforts: Boolean,
+    ) {
         if (match.normalized.isEmpty()) return
         val segments = mutableListOf<MutableList<Pair<SpatialProfileEntity, SpatialProfileEntity>>>()
         match.normalized.sortedBy { it.first.recordedAt }.forEach { pair ->
@@ -342,25 +574,174 @@ class RideProcessor(private val database: FlightLogDatabase) {
                 segments += mutableListOf(pair)
             } else current += pair
         }
-        segments.filter { it.size >= 10 }.forEach { normalized -> createPass(trailId, rideId, match.confidence, normalized) }
+        segments.filter { it.size >= 10 }.forEach { normalized ->
+            createPass(trail, ride, match.confidence, normalized, includeEfforts)
+        }
     }
 
     private suspend fun createPass(
-        trailId: Long,
-        rideId: Long,
+        trail: TrailEntity,
+        ride: com.example.flightlog.data.RideEntity,
         confidence: Int,
         normalized: List<Pair<SpatialProfileEntity, SpatialProfileEntity>>,
+        includeEfforts: Boolean,
     ) {
-        val interrupted = normalized.zipWithNext().any { (a, b) -> b.first.recordedAt - a.first.recordedAt > 5_000 }
+        val sorted = normalized.sortedBy { it.first.recordedAt }
+        val provisionalStops = TrailAnalysis.mapStopObservations(
+            trail.id, trail.uuid, 0, sorted, dao.stopEvents(ride.id),
+        ).filter { it.distanceMeters in trail.startMeters..trail.endMeters }
+        val gaps = TrailAnalysis.gapAssessments(sorted)
+        val hasReversal = sorted.zipWithNext().any { (a, b) -> b.second.distanceMeters < a.second.distanceMeters - 20.0 }
+        val completeCoverage = sorted.minOf { it.second.distanceMeters } <= trail.startMeters + TrailAnalysis.BIN_METERS &&
+            sorted.maxOf { it.second.distanceMeters } >= trail.endMeters - TrailAnalysis.BIN_METERS
+        val unbridgeableGap = gaps.any { !it.bridgeable && it.distanceMeters in trail.startMeters..trail.endMeters }
+        val bridgedGapMillis = gaps.filter { it.bridgeable && it.distanceMeters in trail.startMeters..trail.endMeters }
+            .sumOf { it.durationMillis }
+        val interrupted = hasReversal || unbridgeableGap
+        val passUuid = UUID.nameUUIDFromBytes(
+            "${trail.uuid}:${ride.uuid}:${sorted.first().first.recordedAt}".toByteArray(StandardCharsets.UTF_8),
+        ).toString()
         val passId = dao.insertPass(TrailPassEntity(
-            trailId = trailId, rideId = rideId,
-            startedAt = normalized.first().first.recordedAt, endedAt = normalized.last().first.recordedAt,
-            startMeters = normalized.minOf { it.second.distanceMeters },
-            endMeters = normalized.maxOf { it.second.distanceMeters },
+            uuid = passUuid,
+            trailId = trail.id, rideId = ride.id,
+            startedAt = sorted.first().first.recordedAt, endedAt = sorted.last().first.recordedAt,
+            startMeters = sorted.minOf { it.second.distanceMeters },
+            endMeters = sorted.maxOf { it.second.distanceMeters },
             matchConfidence = confidence, interrupted = interrupted,
+            completeCoverage = completeCoverage,
+            stopCount = provisionalStops.size,
+            stoppedDurationMillis = provisionalStops.sumOf { it.durationMillis },
+            hasReversal = hasReversal,
+            bridgedGapMillis = bridgedGapMillis,
+            fullRunEligible = completeCoverage && provisionalStops.isEmpty() && !interrupted,
         ))
-        val efforts = dao.sections(trailId).mapNotNull { TrailAnalysis.effort(passId, it, normalized) }
+        val observations = provisionalStops.map { it.copy(passId = passId) }
+        if (observations.isNotEmpty()) dao.insertStopObservations(observations)
+        if (!includeEfforts) return
+        val stopDistances = observations.map { it.distanceMeters }
+        val efforts = dao.sections(trail.id).mapNotNull { section ->
+            TrailAnalysis.effort(
+                passId, section, sorted, stopDistances, gaps, trail.startMeters,
+            )?.copy(uuid = UUID.nameUUIDFromBytes(
+                "$passUuid:${section.uuid}".toByteArray(StandardCharsets.UTF_8),
+            ).toString())
+        }
         if (efforts.isNotEmpty()) dao.insertEfforts(efforts)
+    }
+
+    private suspend fun syncPauseZones(trail: TrailEntity) {
+        val observations = dao.stopObservations(trail.id)
+        val passes = dao.passes(trail.id)
+        val candidates = TrailAnalysis.pauseZoneCandidates(trail, observations, passes)
+            .sortedByDescending { it.confidence }
+        val existing = dao.pauseZones(trail.id).toMutableList()
+        val activeBounds = existing.filter {
+            it.state == PauseZoneState.AUTOMATIC || it.state == PauseZoneState.USER_LOCKED
+        }.map { it.startMeters to it.endMeters }.toMutableList()
+        candidates.forEach { candidate ->
+            val prior = existing.minByOrNull { abs((it.startMeters + it.endMeters) / 2.0 - candidate.centerMeters) }
+                ?.takeIf { abs((it.startMeters + it.endMeters) / 2.0 - candidate.centerMeters) <= 20.0 }
+            if (prior != null) {
+                val conflictsWithOtherActive = activeBounds.any { (start, end) ->
+                    val representsPrior = abs(start - prior.startMeters) < .1 && abs(end - prior.endMeters) < .1
+                    val gap = maxOf(0.0, maxOf(start, candidate.startMeters) - minOf(end, candidate.endMeters))
+                    !representsPrior && gap < 30.0
+                }
+                val upgradedState = when (prior.state) {
+                    PauseZoneState.USER_LOCKED, PauseZoneState.DISMISSED -> prior.state
+                    PauseZoneState.AUTOMATIC -> PauseZoneState.AUTOMATIC
+                    PauseZoneState.CANDIDATE -> if (candidate.active && !conflictsWithOtherActive) {
+                        PauseZoneState.AUTOMATIC
+                    } else PauseZoneState.CANDIDATE
+                }
+                val updated = prior.copy(
+                    startMeters = if (prior.state == PauseZoneState.USER_LOCKED) prior.startMeters else candidate.startMeters,
+                    endMeters = if (prior.state == PauseZoneState.USER_LOCKED) prior.endMeters else candidate.endMeters,
+                    state = upgradedState,
+                    supportCount = candidate.supportCount,
+                    eligiblePassCount = candidate.eligiblePassCount,
+                    confidence = candidate.confidence,
+                    medianPauseMillis = candidate.medianPauseMillis,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                dao.updatePauseZone(updated)
+                existing[existing.indexOf(prior)] = updated
+                if (prior.state == PauseZoneState.CANDIDATE && updated.state == PauseZoneState.AUTOMATIC) {
+                    activeBounds += updated.startMeters to updated.endMeters
+                }
+                return@forEach
+            }
+            val conflictsWithActive = activeBounds.any { (start, end) ->
+                val gap = maxOf(0.0, maxOf(start, candidate.startMeters) - minOf(end, candidate.endMeters))
+                gap < 30.0
+            }
+            val state = if (candidate.active && !conflictsWithActive) PauseZoneState.AUTOMATIC else PauseZoneState.CANDIDATE
+            val zone = TrailPauseZoneEntity(
+                uuid = UUID.nameUUIDFromBytes(
+                    "${trail.uuid}:pause:${(candidate.centerMeters / 5.0).toInt()}".toByteArray(StandardCharsets.UTF_8),
+                ).toString(),
+                trailId = trail.id,
+                name = "Pause ${existing.size + 1}",
+                startMeters = candidate.startMeters,
+                endMeters = candidate.endMeters,
+                state = state,
+                supportCount = candidate.supportCount,
+                eligiblePassCount = candidate.eligiblePassCount,
+                confidence = candidate.confidence,
+                medianPauseMillis = candidate.medianPauseMillis,
+            )
+            val id = dao.insertPauseZone(zone)
+            existing += zone.copy(id = id)
+            if (state == PauseZoneState.AUTOMATIC) activeBounds += zone.startMeters to zone.endMeters
+        }
+    }
+
+    private suspend fun syncSplitSections(trail: TrailEntity) {
+        val zones = dao.pauseZones(trail.id).filter {
+            it.state == PauseZoneState.AUTOMATIC || it.state == PauseZoneState.USER_LOCKED
+        }.sortedBy { it.startMeters }
+        data class DesiredSplit(val start: Double, val end: Double, val preceding: Long?, val following: Long?)
+        val desired = mutableListOf<DesiredSplit>()
+        if (zones.isEmpty()) {
+            desired += DesiredSplit(trail.startMeters, trail.endMeters, null, null)
+        } else {
+            var start = trail.startMeters
+            var preceding: Long? = null
+            zones.forEach { zone ->
+                if (zone.startMeters - start >= 5.0) desired += DesiredSplit(start, zone.startMeters, preceding, zone.id)
+                start = zone.endMeters
+                preceding = zone.id
+            }
+            if (trail.endMeters - start >= 5.0) desired += DesiredSplit(start, trail.endMeters, preceding, null)
+        }
+        val existing = dao.sections(trail.id).filter { it.kind == SectionKind.SPLIT }
+        val retainedIds = hashSetOf<Long>()
+        desired.forEachIndexed { index, split ->
+            val prior = existing.firstOrNull {
+                it.precedingPauseZoneId == split.preceding && it.followingPauseZoneId == split.following
+            }
+            if (prior == null) {
+                val id = dao.insertSection(TrailSectionEntity(
+                    trailId = trail.id,
+                    name = "Split ${index + 1}",
+                    kind = SectionKind.SPLIT,
+                    state = SectionState.CONFIRMED,
+                    startMeters = split.start,
+                    endMeters = split.end,
+                    precedingPauseZoneId = split.preceding,
+                    followingPauseZoneId = split.following,
+                ))
+                retainedIds += id
+            } else {
+                dao.updateSection(prior.copy(
+                    name = if (prior.name.startsWith("Split ")) "Split ${index + 1}" else prior.name,
+                    startMeters = split.start,
+                    endMeters = split.end,
+                ))
+                retainedIds += prior.id
+            }
+        }
+        existing.filter { it.id !in retainedIds }.forEach { dao.deleteSection(it.id) }
     }
 }
 

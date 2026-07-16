@@ -19,16 +19,23 @@ interface FlightLogDao {
     @Update suspend fun updateJump(jump: JumpEventEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertTelemetryChunk(chunk: TelemetryChunkEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertSpatialProfiles(profiles: List<SpatialProfileEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertStopEvents(events: List<StopEventEntity>): List<Long>
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertStopEventIfAbsent(event: StopEventEntity): Long
     @Insert suspend fun insertTrail(trail: TrailEntity): Long
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertTrailIfAbsent(trail: TrailEntity): Long
     @Update suspend fun updateTrail(trail: TrailEntity)
     @Insert suspend fun insertSection(section: TrailSectionEntity): Long
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertSectionIfAbsent(section: TrailSectionEntity): Long
     @Update suspend fun updateSection(section: TrailSectionEntity)
+    @Insert suspend fun insertPauseZone(zone: TrailPauseZoneEntity): Long
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPauseZoneIfAbsent(zone: TrailPauseZoneEntity): Long
+    @Update suspend fun updatePauseZone(zone: TrailPauseZoneEntity)
     @Insert suspend fun insertPass(pass: TrailPassEntity): Long
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPassIfAbsent(pass: TrailPassEntity): Long
     @Insert suspend fun insertEfforts(efforts: List<SectionEffortEntity>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertEffortIfAbsent(effort: SectionEffortEntity): Long
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertStopObservations(observations: List<TrailStopObservationEntity>)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertStopObservationIfAbsent(observation: TrailStopObservationEntity): Long
 
     @Query("SELECT * FROM rides ORDER BY startedAt DESC")
     fun observeRides(): Flow<List<RideEntity>>
@@ -42,6 +49,9 @@ interface FlightLogDao {
     @Query("SELECT * FROM track_points WHERE rideId = :rideId ORDER BY recordedAt")
     fun observeTrackPoints(rideId: Long): Flow<List<TrackPointEntity>>
 
+    @Query("SELECT * FROM stop_events WHERE rideId = :rideId ORDER BY startedAt")
+    fun observeStopEventsForRide(rideId: Long): Flow<List<StopEventEntity>>
+
     @Query("SELECT * FROM trails WHERE supportCount >= 2 OR state = 'CONFIRMED' ORDER BY updatedAt DESC")
     fun observeVisibleTrails(): Flow<List<TrailEntity>>
 
@@ -53,6 +63,12 @@ interface FlightLogDao {
 
     @Query("SELECT * FROM section_efforts ORDER BY id DESC")
     fun observeEfforts(): Flow<List<SectionEffortEntity>>
+
+    @Query("SELECT * FROM trail_pause_zones ORDER BY trailId, startMeters")
+    fun observePauseZones(): Flow<List<TrailPauseZoneEntity>>
+
+    @Query("SELECT * FROM trail_stop_observations ORDER BY trailId, distanceMeters")
+    fun observeStopObservations(): Flow<List<TrailStopObservationEntity>>
 
     @Query("SELECT * FROM track_points WHERE rideId = :rideId ORDER BY recordedAt")
     suspend fun trackPoints(rideId: Long): List<TrackPointEntity>
@@ -69,8 +85,20 @@ interface FlightLogDao {
     @Query("SELECT * FROM spatial_profiles WHERE rideId = :rideId ORDER BY distanceBin")
     suspend fun spatialProfiles(rideId: Long): List<SpatialProfileEntity>
 
+    @Query("SELECT * FROM spatial_profiles WHERE rideId = :rideId ORDER BY distanceBin")
+    fun observeSpatialProfiles(rideId: Long): Flow<List<SpatialProfileEntity>>
+
     @Query("SELECT * FROM spatial_profiles ORDER BY rideId, distanceBin")
     suspend fun allSpatialProfiles(): List<SpatialProfileEntity>
+
+    @Query("SELECT * FROM stop_events WHERE rideId = :rideId ORDER BY startedAt")
+    suspend fun stopEvents(rideId: Long): List<StopEventEntity>
+
+    @Query("SELECT * FROM stop_events ORDER BY rideId, startedAt")
+    suspend fun allStopEvents(): List<StopEventEntity>
+
+    @Query("SELECT * FROM stop_events WHERE uuid = :uuid LIMIT 1")
+    suspend fun stopEventByUuid(uuid: String): StopEventEntity?
 
     @Query("SELECT * FROM trails ORDER BY updatedAt DESC")
     suspend fun allTrails(): List<TrailEntity>
@@ -86,6 +114,24 @@ interface FlightLogDao {
 
     @Query("SELECT * FROM trail_sections WHERE uuid = :uuid LIMIT 1")
     suspend fun sectionByUuid(uuid: String): TrailSectionEntity?
+
+    @Query("SELECT * FROM trail_pause_zones WHERE trailId = :trailId ORDER BY startMeters")
+    suspend fun pauseZones(trailId: Long): List<TrailPauseZoneEntity>
+
+    @Query("SELECT * FROM trail_pause_zones ORDER BY trailId, startMeters")
+    suspend fun allPauseZones(): List<TrailPauseZoneEntity>
+
+    @Query("SELECT * FROM trail_pause_zones WHERE uuid = :uuid LIMIT 1")
+    suspend fun pauseZoneByUuid(uuid: String): TrailPauseZoneEntity?
+
+    @Query("SELECT * FROM trail_stop_observations WHERE trailId = :trailId ORDER BY distanceMeters")
+    suspend fun stopObservations(trailId: Long): List<TrailStopObservationEntity>
+
+    @Query("SELECT * FROM trail_stop_observations ORDER BY trailId, distanceMeters")
+    suspend fun allStopObservations(): List<TrailStopObservationEntity>
+
+    @Query("SELECT * FROM trail_stop_observations WHERE uuid = :uuid LIMIT 1")
+    suspend fun stopObservationByUuid(uuid: String): TrailStopObservationEntity?
 
     @Query("SELECT * FROM trail_passes WHERE trailId = :trailId ORDER BY startedAt DESC")
     suspend fun passes(trailId: Long): List<TrailPassEntity>
@@ -114,17 +160,23 @@ interface FlightLogDao {
     @Query("SELECT * FROM rides ORDER BY startedAt")
     suspend fun allRides(): List<RideEntity>
 
-    @Query("SELECT * FROM rides WHERE endedAt IS NOT NULL AND archivedAt IS NULL ORDER BY startedAt")
-    suspend fun ridesNeedingProcessing(): List<RideEntity>
+    @Query("SELECT * FROM rides WHERE endedAt IS NOT NULL AND (archivedAt IS NULL OR analysisVersion < :analysisVersion) ORDER BY startedAt")
+    suspend fun ridesNeedingProcessing(analysisVersion: Int): List<RideEntity>
 
     @Query("DELETE FROM track_points WHERE rideId = :rideId")
     suspend fun deleteTrackPoints(rideId: Long)
+
+    @Query("DELETE FROM stop_events WHERE rideId = :rideId")
+    suspend fun deleteStopEventsForRide(rideId: Long)
 
     @Query("DELETE FROM trail_passes WHERE trailId = :trailId")
     suspend fun deletePassesForTrail(trailId: Long)
 
     @Query("DELETE FROM trail_sections WHERE trailId = :trailId AND kind NOT IN ('WHOLE_TRAIL', 'MANUAL')")
     suspend fun deleteAutoSections(trailId: Long)
+
+    @Query("DELETE FROM trail_sections WHERE id = :sectionId")
+    suspend fun deleteSection(sectionId: Long)
 
     @Query("DELETE FROM rides WHERE id = :rideId AND state NOT IN ('RECORDING', 'PAUSED')")
     suspend fun deleteFinishedRide(rideId: Long): Int
@@ -147,7 +199,13 @@ interface FlightLogDao {
     @Query("SELECT MIN(expiresAt) FROM telemetry_chunks WHERE kind = 'MOTION' AND expiresAt IS NOT NULL")
     fun observeNextMotionExpiry(): Flow<Long?>
 
-    @Query("SELECT COUNT(*) * 96 FROM spatial_profiles")
+    @Query("""SELECT
+        (SELECT COUNT(*) * 112 FROM spatial_profiles) +
+        (SELECT COUNT(*) * 96 FROM stop_events) +
+        (SELECT COUNT(*) * 128 FROM trail_pause_zones) +
+        (SELECT COUNT(*) * 96 FROM trail_stop_observations) +
+        (SELECT COUNT(*) * 144 FROM section_efforts)
+    """)
     fun observeEstimatedProfileBytes(): Flow<Long>
 
     @Query("UPDATE jump_events SET status = :status WHERE id = :jumpId")

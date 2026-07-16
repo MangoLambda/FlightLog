@@ -10,6 +10,8 @@ import com.example.flightlog.domain.RideState
 import com.example.flightlog.domain.SensorQuality
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.RoughnessKind
+import com.example.flightlog.domain.EffortInvalidReason
+import com.example.flightlog.domain.PauseZoneState
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.domain.TelemetryKind
@@ -115,9 +117,11 @@ data class SpatialProfileEntity(
     val recordedAt: Long,
     val latitude: Double,
     val longitude: Double,
+    val altitudeMeters: Double? = null,
     val speedMps: Double,
     val accuracyMeters: Float,
     @ColumnInfo(defaultValue = "0") val observedSpanMillis: Long = 0,
+    @ColumnInfo(defaultValue = "0") val maximumSampleGapMillis: Long = 0,
     val roughnessScore: Double? = null,
     val roughnessKind: RoughnessKind? = null,
     val roughnessConfidence: Int? = null,
@@ -143,6 +147,44 @@ data class TrailEntity(
 )
 
 @Entity(
+    tableName = "stop_events",
+    foreignKeys = [ForeignKey(entity = RideEntity::class, parentColumns = ["id"], childColumns = ["rideId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index(value = ["uuid"], unique = true), Index("rideId"), Index(value = ["rideId", "startedAt"])],
+)
+data class StopEventEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val uuid: String = UUID.randomUUID().toString(),
+    val rideId: Long,
+    val startedAt: Long,
+    val endedAt: Long,
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Float,
+    val durationMillis: Long,
+)
+
+@Entity(
+    tableName = "trail_pause_zones",
+    foreignKeys = [ForeignKey(entity = TrailEntity::class, parentColumns = ["id"], childColumns = ["trailId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index(value = ["uuid"], unique = true), Index("trailId"), Index(value = ["trailId", "startMeters"])],
+)
+data class TrailPauseZoneEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val uuid: String = UUID.randomUUID().toString(),
+    val trailId: Long,
+    val name: String,
+    val startMeters: Double,
+    val endMeters: Double,
+    val state: PauseZoneState = PauseZoneState.AUTOMATIC,
+    val supportCount: Int,
+    val eligiblePassCount: Int,
+    val confidence: Int,
+    val medianPauseMillis: Long,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+@Entity(
     tableName = "trail_sections",
     foreignKeys = [ForeignKey(entity = TrailEntity::class, parentColumns = ["id"], childColumns = ["trailId"], onDelete = ForeignKey.CASCADE)],
     indices = [Index(value = ["uuid"], unique = true), Index("trailId")],
@@ -156,6 +198,8 @@ data class TrailSectionEntity(
     val state: SectionState = SectionState.SUGGESTED,
     val startMeters: Double,
     val endMeters: Double,
+    val precedingPauseZoneId: Long? = null,
+    val followingPauseZoneId: Long? = null,
 )
 
 @Entity(
@@ -177,6 +221,37 @@ data class TrailPassEntity(
     val endMeters: Double,
     val matchConfidence: Int,
     val interrupted: Boolean,
+    @ColumnInfo(defaultValue = "0") val completeCoverage: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val stopCount: Int = 0,
+    @ColumnInfo(defaultValue = "0") val stoppedDurationMillis: Long = 0,
+    @ColumnInfo(defaultValue = "0") val hasReversal: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val bridgedGapMillis: Long = 0,
+    @ColumnInfo(defaultValue = "0") val fullRunEligible: Boolean = false,
+)
+
+@Entity(
+    tableName = "trail_stop_observations",
+    foreignKeys = [
+        ForeignKey(entity = TrailEntity::class, parentColumns = ["id"], childColumns = ["trailId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = TrailPassEntity::class, parentColumns = ["id"], childColumns = ["passId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = StopEventEntity::class, parentColumns = ["id"], childColumns = ["stopEventId"], onDelete = ForeignKey.CASCADE),
+    ],
+    indices = [
+        Index(value = ["uuid"], unique = true), Index("trailId"), Index("passId"), Index("stopEventId"),
+        Index(value = ["trailId", "distanceMeters"]),
+    ],
+)
+data class TrailStopObservationEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val uuid: String = UUID.randomUUID().toString(),
+    val trailId: Long,
+    val passId: Long,
+    val stopEventId: Long,
+    val distanceMeters: Double,
+    val startMeters: Double,
+    val endMeters: Double,
+    val durationMillis: Long,
+    val confidence: Int,
 )
 
 @Entity(
@@ -204,4 +279,8 @@ data class SectionEffortEntity(
     val lateralOffsetMeters: Double,
     val lateralUncertaintyMeters: Double,
     val valid: Boolean,
+    val invalidReason: EffortInvalidReason? = null,
+    @ColumnInfo(defaultValue = "0") val reachedWithoutPriorStop: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val estimated: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val bridgedGapMillis: Long = 0,
 )

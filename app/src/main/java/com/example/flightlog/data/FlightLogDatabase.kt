@@ -12,9 +12,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     entities = [
         RideEntity::class, TrackPointEntity::class, JumpEventEntity::class,
         TelemetryChunkEntity::class, SpatialProfileEntity::class, TrailEntity::class,
-        TrailSectionEntity::class, TrailPassEntity::class, SectionEffortEntity::class,
+        StopEventEntity::class, TrailPauseZoneEntity::class, TrailSectionEntity::class,
+        TrailPassEntity::class, TrailStopObservationEntity::class, SectionEffortEntity::class,
     ],
-    version = 2,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -29,7 +30,7 @@ abstract class FlightLogDatabase : RoomDatabase() {
                 context.applicationContext,
                 FlightLogDatabase::class.java,
                 "flightlog.db",
-            ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
         }
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -62,6 +63,49 @@ abstract class FlightLogDatabase : RoomDatabase() {
                 db.execSQL("CREATE UNIQUE INDEX index_section_efforts_uuid ON section_efforts(uuid)")
                 db.execSQL("CREATE INDEX index_section_efforts_passId ON section_efforts(passId)")
                 db.execSQL("CREATE INDEX index_section_efforts_sectionId ON section_efforts(sectionId)")
+            }
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE spatial_profiles ADD COLUMN altitudeMeters REAL")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE spatial_profiles ADD COLUMN maximumSampleGapMillis INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE section_efforts ADD COLUMN invalidReason TEXT")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""CREATE TABLE stop_events (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, uuid TEXT NOT NULL, rideId INTEGER NOT NULL, startedAt INTEGER NOT NULL, endedAt INTEGER NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, accuracyMeters REAL NOT NULL, durationMillis INTEGER NOT NULL, FOREIGN KEY(rideId) REFERENCES rides(id) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+                db.execSQL("CREATE UNIQUE INDEX index_stop_events_uuid ON stop_events(uuid)")
+                db.execSQL("CREATE INDEX index_stop_events_rideId ON stop_events(rideId)")
+                db.execSQL("CREATE INDEX index_stop_events_rideId_startedAt ON stop_events(rideId, startedAt)")
+                db.execSQL("""CREATE TABLE trail_pause_zones (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, uuid TEXT NOT NULL, trailId INTEGER NOT NULL, name TEXT NOT NULL, startMeters REAL NOT NULL, endMeters REAL NOT NULL, state TEXT NOT NULL, supportCount INTEGER NOT NULL, eligiblePassCount INTEGER NOT NULL, confidence INTEGER NOT NULL, medianPauseMillis INTEGER NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, FOREIGN KEY(trailId) REFERENCES trails(id) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+                db.execSQL("CREATE UNIQUE INDEX index_trail_pause_zones_uuid ON trail_pause_zones(uuid)")
+                db.execSQL("CREATE INDEX index_trail_pause_zones_trailId ON trail_pause_zones(trailId)")
+                db.execSQL("CREATE INDEX index_trail_pause_zones_trailId_startMeters ON trail_pause_zones(trailId, startMeters)")
+                db.execSQL("ALTER TABLE trail_sections ADD COLUMN precedingPauseZoneId INTEGER")
+                db.execSQL("ALTER TABLE trail_sections ADD COLUMN followingPauseZoneId INTEGER")
+                db.execSQL("ALTER TABLE trail_passes ADD COLUMN completeCoverage INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE trail_passes ADD COLUMN stopCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE trail_passes ADD COLUMN stoppedDurationMillis INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE trail_passes ADD COLUMN hasReversal INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE trail_passes ADD COLUMN bridgedGapMillis INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE trail_passes ADD COLUMN fullRunEligible INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("""CREATE TABLE trail_stop_observations (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, uuid TEXT NOT NULL, trailId INTEGER NOT NULL, passId INTEGER NOT NULL, stopEventId INTEGER NOT NULL, distanceMeters REAL NOT NULL, startMeters REAL NOT NULL, endMeters REAL NOT NULL, durationMillis INTEGER NOT NULL, confidence INTEGER NOT NULL, FOREIGN KEY(trailId) REFERENCES trails(id) ON UPDATE NO ACTION ON DELETE CASCADE, FOREIGN KEY(passId) REFERENCES trail_passes(id) ON UPDATE NO ACTION ON DELETE CASCADE, FOREIGN KEY(stopEventId) REFERENCES stop_events(id) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+                db.execSQL("CREATE UNIQUE INDEX index_trail_stop_observations_uuid ON trail_stop_observations(uuid)")
+                db.execSQL("CREATE INDEX index_trail_stop_observations_trailId ON trail_stop_observations(trailId)")
+                db.execSQL("CREATE INDEX index_trail_stop_observations_passId ON trail_stop_observations(passId)")
+                db.execSQL("CREATE INDEX index_trail_stop_observations_stopEventId ON trail_stop_observations(stopEventId)")
+                db.execSQL("CREATE INDEX index_trail_stop_observations_trailId_distanceMeters ON trail_stop_observations(trailId, distanceMeters)")
+                db.execSQL("ALTER TABLE section_efforts ADD COLUMN reachedWithoutPriorStop INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE section_efforts ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE section_efforts ADD COLUMN bridgedGapMillis INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

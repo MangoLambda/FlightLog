@@ -6,9 +6,12 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PointF
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -30,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,19 +70,45 @@ import org.maplibre.android.style.layers.PropertyFactory.iconRotationAlignment
 import org.maplibre.android.style.layers.PropertyFactory.iconSize
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
+import org.maplibre.android.style.layers.PropertyFactory.lineOpacity
+import org.maplibre.android.style.layers.PropertyFactory.textAllowOverlap
+import org.maplibre.android.style.layers.PropertyFactory.textColor
+import org.maplibre.android.style.layers.PropertyFactory.textField
+import org.maplibre.android.style.layers.PropertyFactory.textHaloColor
+import org.maplibre.android.style.layers.PropertyFactory.textHaloWidth
+import org.maplibre.android.style.layers.PropertyFactory.textSize
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.android.tile.TileOperation
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
+import kotlin.math.cos
+import kotlin.math.sin
 
 private const val ROUTE_SOURCE = "flightlog-route"
 private const val COMPARISON_ROUTE_SOURCE = "flightlog-comparison-route"
+private const val HIGHLIGHTED_ROUTE_SOURCE = "flightlog-highlighted-route"
+private const val BOUNDARY_START_SOURCE = "flightlog-boundary-start"
+private const val BOUNDARY_END_SOURCE = "flightlog-boundary-end"
+private const val BOUNDARY_START_IMAGE = "flightlog-boundary-start-image"
+private const val BOUNDARY_END_IMAGE = "flightlog-boundary-end-image"
 private const val JUMP_SOURCE = "flightlog-jumps"
+private const val STOP_SOURCE = "flightlog-stops"
+private const val STOP_IMAGE = "flightlog-stop-image"
+private const val SPLIT_ROUTE_SOURCE = "flightlog-split-routes"
+private const val PAUSE_ZONE_ROUTE_SOURCE = "flightlog-pause-zone-routes"
+private const val SPLIT_LABEL_SOURCE = "flightlog-split-labels"
 private const val RIDER_SOURCE = "flightlog-rider"
 private const val RIDER_IMAGE = "flightlog-rider-arrow"
 private const val RIDER_ZOOM = 14.5
+
+private enum class BoundaryDragTarget { START, END }
+
+private class BoundaryDragState {
+    var target: BoundaryDragTarget? = null
+    var lastPointTimestamp: Long? = null
+}
 
 @Composable
 fun TrailMap(
@@ -91,9 +121,19 @@ fun TrailMap(
     showRider: Boolean = false,
     fitRoute: Boolean = false,
     comparisonPoints: List<TrackPointEntity> = emptyList(),
+    highlightedPoints: List<TrackPointEntity> = emptyList(),
+    stopPoints: List<TrackPointEntity> = emptyList(),
+    splitRoutes: List<List<TrackPointEntity>> = emptyList(),
+    pauseZoneRoutes: List<List<TrackPointEntity>> = emptyList(),
+    selectedSplitIndex: Int = 0,
+    boundaryStart: TrackPointEntity? = null,
+    boundaryEnd: TrackPointEntity? = null,
+    onBoundaryStartChange: ((TrackPointEntity) -> Unit)? = null,
+    onBoundaryEndChange: ((TrackPointEntity) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val routePaddingPixels = with(LocalDensity.current) { 96.dp.roundToPx() }
+    val boundaryTouchRadiusPixels = with(LocalDensity.current) { 32.dp.toPx() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val provider = remember(apiKey, mapStyle) { MapProvider.configured(apiKey, mapStyle) }
     val networkAvailable = rememberValidatedNetworkAvailable()
@@ -102,11 +142,27 @@ fun TrailMap(
     var followingRider by remember { mutableStateOf(showRider) }
     val mapView = remember { mutableStateOf<MapView?>(null) }
     val tileActionListener = remember { mutableStateOf<MapView.OnTileActionListener?>(null) }
+    val boundaryDragState = remember { BoundaryDragState() }
+    val currentPoints = rememberUpdatedState(points)
+    val currentBoundaryStart = rememberUpdatedState(boundaryStart)
+    val currentBoundaryEnd = rememberUpdatedState(boundaryEnd)
+    val currentOnBoundaryStartChange = rememberUpdatedState(onBoundaryStartChange)
+    val currentOnBoundaryEndChange = rememberUpdatedState(onBoundaryEndChange)
+    val routeFitKey = remember(points) {
+        Triple(points.size, points.firstOrNull()?.recordedAt, points.lastOrNull()?.recordedAt)
+    }
 
     LaunchedEffect(showRider) {
         if (showRider) {
             followingRider = true
-            updateMap(map, points, jumps, showRider = true, fitRoute = false, routePaddingPixels = routePaddingPixels, moveCamera = true, comparisonPoints = comparisonPoints)
+            updateMap(
+                map, points, jumps, showRider = true, fitRoute = false,
+                routePaddingPixels = routePaddingPixels, moveCamera = true,
+                comparisonPoints = comparisonPoints, highlightedPoints = highlightedPoints,
+                stopPoints = stopPoints,
+                splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
+                boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
+            )
         }
     }
 
@@ -116,7 +172,27 @@ fun TrailMap(
         readyMap.uiSettings.isAttributionEnabled = provider !is MapProvider.OfflineCanvas
         readyMap.setStyle(Style.Builder().fromJson(provider.styleJson())) { style ->
             addRideLayers(style, context)
-            updateMap(readyMap, points, jumps, showRider, fitRoute, routePaddingPixels, moveCamera = showRider || fitRoute || points.size < 2, comparisonPoints = comparisonPoints)
+            updateMap(
+                readyMap, points, jumps, showRider, fitRoute, routePaddingPixels,
+                moveCamera = showRider || fitRoute || points.size < 2,
+                comparisonPoints = comparisonPoints, highlightedPoints = highlightedPoints,
+                stopPoints = stopPoints,
+                splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
+                boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
+            )
+        }
+    }
+
+    LaunchedEffect(map, fitRoute, routeFitKey) {
+        if (fitRoute && points.size >= 2) {
+            updateMap(
+                map, points, jumps, showRider, fitRoute = true,
+                routePaddingPixels = routePaddingPixels, moveCamera = false,
+                comparisonPoints = comparisonPoints, highlightedPoints = highlightedPoints,
+                stopPoints = stopPoints,
+                splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
+                boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
+            )
         }
     }
 
@@ -125,7 +201,23 @@ fun TrailMap(
             modifier = Modifier.fillMaxSize(),
             factory = { context ->
                 val options = MapLibreMapOptions.createFromAttributes(context).textureMode(true)
-                MapView(context, options).also { view ->
+                object : MapView(context, options) {
+                    override fun onTouchEvent(event: MotionEvent): Boolean {
+                        val handled = handleBoundaryDrag(
+                            view = this,
+                            event = event,
+                            map = map,
+                            points = currentPoints.value,
+                            boundaryStart = currentBoundaryStart.value,
+                            boundaryEnd = currentBoundaryEnd.value,
+                            touchRadiusPixels = boundaryTouchRadiusPixels,
+                            state = boundaryDragState,
+                            onStartChange = currentOnBoundaryStartChange.value,
+                            onEndChange = currentOnBoundaryEndChange.value,
+                        )
+                        return if (handled) true else super.onTouchEvent(event)
+                    }
+                }.also { view ->
                     mapView.value = view
                     val listener = MapView.OnTileActionListener { operation, _, _, _, _, _, sourceId ->
                         if (operation == TileOperation.LoadFromNetwork && sourceId == "thunderforest") {
@@ -148,14 +240,31 @@ fun TrailMap(
                     }
                 }
             },
-            update = { updateMap(map, points, jumps, showRider, fitRoute, routePaddingPixels, moveCamera = followingRider, comparisonPoints = comparisonPoints) },
+            update = {
+                updateMap(
+                    map, points, jumps, showRider, fitRoute = false,
+                    routePaddingPixels = routePaddingPixels,
+                    moveCamera = followingRider, comparisonPoints = comparisonPoints,
+                    highlightedPoints = highlightedPoints, stopPoints = stopPoints,
+                    splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
+                    boundaryStart = boundaryStart,
+                    boundaryEnd = boundaryEnd,
+                )
+            },
         )
 
         if (showRider && points.isNotEmpty()) {
             FloatingActionButton(
                 onClick = {
                     followingRider = true
-                    updateMap(map, points, jumps, showRider = true, fitRoute = false, routePaddingPixels = routePaddingPixels, moveCamera = true, comparisonPoints = comparisonPoints)
+                    updateMap(
+                        map, points, jumps, showRider = true, fitRoute = false,
+                        routePaddingPixels = routePaddingPixels, moveCamera = true,
+                        comparisonPoints = comparisonPoints, highlightedPoints = highlightedPoints,
+                        stopPoints = stopPoints,
+                        splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
+                        boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
+                    )
                 },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -205,6 +314,71 @@ fun TrailMap(
             tileActionListener.value?.let { mapView.value?.removeOnTileActionListener(it) }
             mapView.value?.onDestroy()
         }
+    }
+}
+
+private fun handleBoundaryDrag(
+    view: MapView,
+    event: MotionEvent,
+    map: MapLibreMap?,
+    points: List<TrackPointEntity>,
+    boundaryStart: TrackPointEntity?,
+    boundaryEnd: TrackPointEntity?,
+    touchRadiusPixels: Float,
+    state: BoundaryDragState,
+    onStartChange: ((TrackPointEntity) -> Unit)?,
+    onEndChange: ((TrackPointEntity) -> Unit)?,
+): Boolean {
+    val readyMap = map ?: return false
+    when (event.actionMasked) {
+        MotionEvent.ACTION_DOWN -> {
+            val candidates = buildList {
+                if (boundaryStart != null && onStartChange != null) add(BoundaryDragTarget.START to boundaryStart)
+                if (boundaryEnd != null && onEndChange != null) add(BoundaryDragTarget.END to boundaryEnd)
+            }
+            val selected = candidates.minByOrNull { (_, point) ->
+                val screenPoint = readyMap.projection.toScreenLocation(LatLng(point.latitude, point.longitude))
+                val deltaX = screenPoint.x - event.x
+                val deltaY = screenPoint.y - event.y
+                deltaX * deltaX + deltaY * deltaY
+            } ?: return false
+            val selectedScreenPoint = readyMap.projection.toScreenLocation(
+                LatLng(selected.second.latitude, selected.second.longitude),
+            )
+            val deltaX = selectedScreenPoint.x - event.x
+            val deltaY = selectedScreenPoint.y - event.y
+            if (deltaX * deltaX + deltaY * deltaY > touchRadiusPixels * touchRadiusPixels) return false
+
+            state.target = selected.first
+            state.lastPointTimestamp = selected.second.recordedAt
+            view.parent?.requestDisallowInterceptTouchEvent(true)
+            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            return true
+        }
+
+        MotionEvent.ACTION_MOVE -> {
+            val target = state.target ?: return false
+            val location = readyMap.projection.fromScreenLocation(PointF(event.x, event.y))
+            val nearest = nearestRoutePoint(points, location.latitude, location.longitude) ?: return true
+            if (nearest.recordedAt != state.lastPointTimestamp) {
+                state.lastPointTimestamp = nearest.recordedAt
+                when (target) {
+                    BoundaryDragTarget.START -> onStartChange?.invoke(nearest)
+                    BoundaryDragTarget.END -> onEndChange?.invoke(nearest)
+                }
+            }
+            return true
+        }
+
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            if (state.target == null) return false
+            state.target = null
+            state.lastPointTimestamp = null
+            view.parent?.requestDisallowInterceptTouchEvent(false)
+            return true
+        }
+
+        else -> return state.target != null
     }
 }
 
@@ -269,6 +443,20 @@ private fun addRideLayers(style: Style, context: Context) {
     style.addLayer(LineLayer("flightlog-route-line", ROUTE_SOURCE).withProperties(
         lineColor("#42D9E8"), lineWidth(5f),
     ))
+    style.addSource(GeoJsonSource(HIGHLIGHTED_ROUTE_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(LineLayer("flightlog-highlighted-route-line", HIGHLIGHTED_ROUTE_SOURCE).withProperties(
+        lineColor("#42D9E8"), lineWidth(7f),
+    ))
+    style.addImage(BOUNDARY_START_IMAGE, boundaryHandleBitmap(context, Color.rgb(183, 243, 74)))
+    style.addImage(BOUNDARY_END_IMAGE, boundaryHandleBitmap(context, Color.rgb(255, 184, 77)))
+    style.addSource(GeoJsonSource(BOUNDARY_START_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(SymbolLayer("flightlog-boundary-start-point", BOUNDARY_START_SOURCE).withProperties(
+        iconImage(BOUNDARY_START_IMAGE), iconSize(.8f), iconAllowOverlap(true),
+    ))
+    style.addSource(GeoJsonSource(BOUNDARY_END_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(SymbolLayer("flightlog-boundary-end-point", BOUNDARY_END_SOURCE).withProperties(
+        iconImage(BOUNDARY_END_IMAGE), iconSize(.8f), iconAllowOverlap(true),
+    ))
     style.addSource(GeoJsonSource(COMPARISON_ROUTE_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(LineLayer("flightlog-comparison-route-line", COMPARISON_ROUTE_SOURCE).withProperties(
         lineColor("#FFB84D"), lineWidth(4f),
@@ -276,6 +464,27 @@ private fun addRideLayers(style: Style, context: Context) {
     style.addSource(GeoJsonSource(JUMP_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(CircleLayer("flightlog-jump-points", JUMP_SOURCE).withProperties(
         circleColor("#FFB84D"), circleRadius(6f),
+    ))
+    style.addSource(GeoJsonSource(SPLIT_ROUTE_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(LineLayer("flightlog-split-route-lines", SPLIT_ROUTE_SOURCE).withProperties(
+        lineColor(Expression.get("color")), lineWidth(7f),
+    ))
+    style.addSource(GeoJsonSource(PAUSE_ZONE_ROUTE_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(LineLayer("flightlog-pause-zone-lines", PAUSE_ZONE_ROUTE_SOURCE).withProperties(
+        lineColor("#D22A2A"), lineWidth(13f), lineOpacity(.58f),
+    ))
+    style.addSource(GeoJsonSource(SPLIT_LABEL_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(CircleLayer("flightlog-split-label-circles", SPLIT_LABEL_SOURCE).withProperties(
+        circleColor("#132019"), circleRadius(11f),
+    ))
+    style.addLayer(SymbolLayer("flightlog-split-labels", SPLIT_LABEL_SOURCE).withProperties(
+        textField(Expression.get("label")), textSize(12f), textColor("#FFFFFF"),
+        textHaloColor("#132019"), textHaloWidth(1f), textAllowOverlap(true),
+    ))
+    style.addImage(STOP_IMAGE, stopSignBitmap(context))
+    style.addSource(GeoJsonSource(STOP_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(SymbolLayer("flightlog-stop-points", STOP_SOURCE).withProperties(
+        iconImage(STOP_IMAGE), iconSize(.75f), iconAllowOverlap(true),
     ))
     style.addImage(RIDER_IMAGE, riderArrowBitmap(context))
     style.addSource(GeoJsonSource(RIDER_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
@@ -297,6 +506,13 @@ private fun updateMap(
     routePaddingPixels: Int,
     moveCamera: Boolean,
     comparisonPoints: List<TrackPointEntity> = emptyList(),
+    highlightedPoints: List<TrackPointEntity> = emptyList(),
+    stopPoints: List<TrackPointEntity> = emptyList(),
+    splitRoutes: List<List<TrackPointEntity>> = emptyList(),
+    pauseZoneRoutes: List<List<TrackPointEntity>> = emptyList(),
+    selectedSplitIndex: Int = 0,
+    boundaryStart: TrackPointEntity? = null,
+    boundaryEnd: TrackPointEntity? = null,
 ) {
     val readyMap = map ?: return
     readyMap.getStyle { style ->
@@ -304,6 +520,24 @@ private fun updateMap(
             arrayOf(Feature.fromGeometry(LineString.fromLngLats(points.map { Point.fromLngLat(it.longitude, it.latitude) })))
         } else emptyArray()
         style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(routeFeatures))
+        style.getLayerAs<LineLayer>("flightlog-route-line")?.setProperties(
+            lineColor(if (highlightedPoints.isEmpty()) "#42D9E8" else "#6F7B73"),
+            lineWidth(if (highlightedPoints.isEmpty()) 5f else 4f),
+        )
+        val highlightedFeatures = if (highlightedPoints.size >= 2) {
+            arrayOf(Feature.fromGeometry(LineString.fromLngLats(highlightedPoints.map { Point.fromLngLat(it.longitude, it.latitude) })))
+        } else emptyArray()
+        style.getSourceAs<GeoJsonSource>(HIGHLIGHTED_ROUTE_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(highlightedFeatures))
+        style.getSourceAs<GeoJsonSource>(BOUNDARY_START_SOURCE)?.setGeoJson(
+            FeatureCollection.fromFeatures(boundaryStart?.let {
+                arrayOf(Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)))
+            } ?: emptyArray()),
+        )
+        style.getSourceAs<GeoJsonSource>(BOUNDARY_END_SOURCE)?.setGeoJson(
+            FeatureCollection.fromFeatures(boundaryEnd?.let {
+                arrayOf(Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)))
+            } ?: emptyArray()),
+        )
         val comparisonFeatures = if (comparisonPoints.size >= 2) {
             arrayOf(Feature.fromGeometry(LineString.fromLngLats(comparisonPoints.map { Point.fromLngLat(it.longitude, it.latitude) })))
         } else emptyArray()
@@ -314,6 +548,32 @@ private fun updateMap(
             Feature.fromGeometry(Point.fromLngLat(lon, lat))
         }
         style.getSourceAs<GeoJsonSource>(JUMP_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(jumpFeatures))
+        val stopFeatures = stopPoints.map {
+            Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude))
+        }
+        style.getSourceAs<GeoJsonSource>(STOP_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(stopFeatures))
+        val splitColors = listOf("#42D9E8", "#A7E34B", "#FFB84D", "#9C8CFF", "#54B6FF")
+        val splitFeatures = splitRoutes.mapIndexedNotNull { index, route ->
+            if (route.size < 2) return@mapIndexedNotNull null
+            Feature.fromGeometry(LineString.fromLngLats(route.map { Point.fromLngLat(it.longitude, it.latitude) })).apply {
+                addStringProperty("color", if (index == selectedSplitIndex) "#42D9E8" else splitColors[index % splitColors.size])
+            }
+        }
+        style.getSourceAs<GeoJsonSource>(SPLIT_ROUTE_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(splitFeatures))
+        val pauseFeatures = pauseZoneRoutes.mapNotNull { route ->
+            if (route.size < 2) null else Feature.fromGeometry(
+                LineString.fromLngLats(route.map { Point.fromLngLat(it.longitude, it.latitude) }),
+            )
+        }
+        style.getSourceAs<GeoJsonSource>(PAUSE_ZONE_ROUTE_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(pauseFeatures))
+        val labelFeatures = splitRoutes.mapIndexedNotNull { index, route ->
+            route.getOrNull(route.size / 2)?.let { point ->
+                Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude)).apply {
+                    addStringProperty("label", (index + 1).toString())
+                }
+            }
+        }
+        style.getSourceAs<GeoJsonSource>(SPLIT_LABEL_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(labelFeatures))
         val rider = points.lastOrNull().takeIf { showRider }
         val riderFeatures = rider?.let {
             arrayOf(Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)).apply {
@@ -336,6 +596,57 @@ private fun updateMap(
                 .zoom(if (showRider) RIDER_ZOOM else 15.0)
                 .build()
         }
+    }
+}
+
+private fun stopSignBitmap(context: Context): Bitmap {
+    val density = context.resources.displayMetrics.density
+    val size = (30 * density).toInt()
+    return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
+        val canvas = Canvas(bitmap)
+        val center = size / 2f
+        fun octagon(radius: Float) = Path().apply {
+            repeat(8) { index ->
+                val angle = Math.PI / 8.0 + index * Math.PI / 4.0
+                val x = center + cos(angle).toFloat() * radius
+                val y = center + sin(angle).toFloat() * radius
+                if (index == 0) moveTo(x, y) else lineTo(x, y)
+            }
+            close()
+        }
+        canvas.drawPath(octagon(size * .48f), Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        })
+        canvas.drawPath(octagon(size * .40f), Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(210, 42, 42)
+            style = Paint.Style.FILL
+        })
+    }
+}
+
+private fun boundaryHandleBitmap(context: Context, fillColor: Int): Bitmap {
+    val density = context.resources.displayMetrics.density
+    val size = (48 * density).toInt()
+    return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
+        val canvas = Canvas(bitmap)
+        val center = size / 2f
+        canvas.drawCircle(center, center, size * .48f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(16, 21, 18)
+            style = Paint.Style.FILL
+        })
+        canvas.drawCircle(center, center, size * .41f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = fillColor
+            style = Paint.Style.FILL
+        })
+        val gripPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(23, 32, 0)
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeWidth = size * .055f
+        }
+        canvas.drawLine(size * .34f, size * .44f, size * .66f, size * .44f, gripPaint)
+        canvas.drawLine(size * .34f, size * .56f, size * .66f, size * .56f, gripPaint)
     }
 }
 

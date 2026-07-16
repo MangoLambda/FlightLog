@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.example.flightlog.FlightLogApplication
 import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.domain.JumpStatus
@@ -13,6 +14,7 @@ import com.example.flightlog.export.RideExporter
 import com.example.flightlog.export.FlightLogBackup
 import android.net.Uri
 import com.example.flightlog.data.TrailSectionEntity
+import com.example.flightlog.data.TrailPauseZoneEntity
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.domain.ComparisonMode
@@ -22,6 +24,7 @@ import com.example.flightlog.maps.MapStyleStore
 import com.example.flightlog.maps.MapTileCache
 import com.example.flightlog.tracking.RecordingSettingsStore
 import com.example.flightlog.tracking.TrackingState
+import com.example.flightlog.tracking.TrailAnalysis
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +53,8 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     val sections = repository.sections.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val passes = repository.passes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val efforts = repository.efforts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val pauseZones = repository.pauseZones.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val stopObservations = repository.stopObservations.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val telemetryBytes = repository.telemetryBytes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
     val motionBytes = repository.motionBytes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
     val nextMotionExpiry = repository.nextMotionExpiry.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -81,6 +86,10 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
         if (id == null) flowOf(emptyList()) else repository.jumps(id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val selectedRideStops = selectedRideId.flatMapLatest { id ->
+        if (id == null) flowOf(emptyList()) else repository.stops(id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     private fun comparisonPoints(passId: MutableStateFlow<Long?>) = combine(passId, passes) { id, all ->
         all.firstOrNull { it.id == id }?.rideId
     }.flatMapLatest { rideId -> if (rideId == null) flowOf(emptyList()) else repository.trackPoints(rideId) }
@@ -88,6 +97,12 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
 
     val comparisonPointsA = comparisonPoints(selectedPassAId)
     val comparisonPointsB = comparisonPoints(selectedPassBId)
+
+    val selectedTrailProfiles = combine(selectedTrailId, trails) { trailId, allTrails ->
+        allTrails.firstOrNull { it.id == trailId }?.canonicalRideId
+    }.flatMapLatest { rideId ->
+        if (rideId == null) flowOf(emptyList()) else repository.observeSpatialProfiles(rideId)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun openRide(rideId: Long) {
         selectedRideId.value = rideId
@@ -108,6 +123,7 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun openTrail(trailId: Long) {
         selectedTrailId.value = trailId
+        comparisonMode.value = ComparisonMode.TREND
         val trailPasses = passes.value.filter { it.trailId == trailId }
         selectedPassAId.value = trailPasses.firstOrNull()?.id
         selectedPassBId.value = trailPasses.drop(1).firstOrNull()?.id
@@ -131,6 +147,54 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
             trailId = trailId, name = name.trim().take(80), kind = SectionKind.MANUAL,
             state = SectionState.CONFIRMED, startMeters = startMeters, endMeters = endMeters,
         ))
+        app.rideProcessor.rebuildTrail(trailId)
+    }
+
+    fun updatePauseZone(zoneId: Long, name: String, startMeters: Double, endMeters: Double) = viewModelScope.launch {
+        repository.updatePauseZone(zoneId, name, startMeters, endMeters)?.let { app.rideProcessor.rebuildTrail(it) }
+    }
+
+    fun addPauseZone(trailId: Long, startMeters: Double, endMeters: Double) = viewModelScope.launch {
+        repository.addPauseZone(trailId, startMeters, endMeters)?.let { app.rideProcessor.rebuildTrail(it) }
+    }
+
+    fun dismissPauseZone(zoneId: Long, dismissed: Boolean) = viewModelScope.launch {
+        repository.setPauseZoneDismissed(zoneId, dismissed)?.let { app.rideProcessor.rebuildTrail(it) }
+    }
+
+    internal fun savePauseZones(trailId: Long, drafts: List<PauseZoneDraft>) = viewModelScope.launch {
+        app.database.withTransaction {
+            val trail = app.database.dao().allTrails().firstOrNull { it.id == trailId } ?: return@withTransaction
+            val existing = app.database.dao().pauseZones(trailId).associateBy { it.id }
+            drafts.forEach { draft ->
+                if (!draft.startMeters.isFinite() || !draft.endMeters.isFinite() ||
+                    draft.startMeters < trail.startMeters || draft.endMeters > trail.endMeters ||
+                    draft.endMeters - draft.startMeters < 5.0
+                ) return@forEach
+                val prior = draft.entityId?.let(existing::get)
+                if (prior == null) {
+                    app.database.dao().insertPauseZone(TrailPauseZoneEntity(
+                        trailId = trailId,
+                        name = draft.name.trim().take(80).ifBlank { "Pause area" },
+                        startMeters = draft.startMeters,
+                        endMeters = draft.endMeters,
+                        state = draft.state,
+                        supportCount = 0,
+                        eligiblePassCount = 0,
+                        confidence = 100,
+                        medianPauseMillis = 0,
+                    ))
+                } else {
+                    app.database.dao().updatePauseZone(prior.copy(
+                        name = draft.name.trim().take(80).ifBlank { prior.name },
+                        startMeters = draft.startMeters,
+                        endMeters = draft.endMeters,
+                        state = draft.state,
+                        updatedAt = System.currentTimeMillis(),
+                    ))
+                }
+            }
+        }
         app.rideProcessor.rebuildTrail(trailId)
     }
 
@@ -233,6 +297,9 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
             val result = getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
                 FlightLogBackup(getApplication(), app.database).import(input)
             } ?: error("Could not open the selected file")
+            app.database.dao().ridesNeedingProcessing(TrailAnalysis.ANALYSIS_VERSION)
+                .forEach { app.rideProcessor.compactAndAnalyze(it.id) }
+            app.rideProcessor.rebuildAllTrails()
             BackupUiState.Success("Imported ${result.ridesAdded} rides; ${result.duplicateRides} already present")
         }.getOrElse { BackupUiState.Error(it.message ?: "Backup import failed") }
     }

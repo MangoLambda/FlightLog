@@ -5,6 +5,7 @@ import androidx.room.withTransaction
 import com.example.flightlog.data.*
 import com.example.flightlog.domain.*
 import com.example.flightlog.tracking.TelemetryCodec
+import com.example.flightlog.tracking.TrailAnalysis
 import com.example.flightlog.tracking.toEntity
 import java.io.*
 import java.util.UUID
@@ -24,8 +25,12 @@ class FlightLogBackup(
     suspend fun export(output: OutputStream) {
         val rides = dao.allRides()
         val rideUuids = rides.associate { it.id to it.uuid }
+        val stopEvents = dao.allStopEvents()
+        val stopEventUuids = stopEvents.associate { it.id to it.uuid }
         val trails = dao.allTrails()
         val trailUuids = trails.associate { it.id to it.uuid }
+        val pauseZones = dao.allPauseZones()
+        val pauseZoneUuids = pauseZones.associate { it.id to it.uuid }
         val sections = dao.allSections()
         val sectionUuids = sections.associate { it.id to it.uuid }
         val passes = dao.allPasses()
@@ -38,15 +43,26 @@ class FlightLogBackup(
         }
         ZipOutputStream(BufferedOutputStream(output)).use { zip ->
             zip.json("manifest.json", JSONObject()
-                .put("format", FORMAT_VERSION).put("analysisVersion", 1)
+                .put("format", FORMAT_VERSION).put("analysisVersion", TrailAnalysis.ANALYSIS_VERSION)
                 .put("createdAt", System.currentTimeMillis()).toString())
             zip.jsonLines("rides.jsonl", rides.map { it.json() })
+            zip.jsonLines("stops.jsonl", stopEvents.map { it.json(rideUuids.getValue(it.rideId)) })
             zip.jsonLines("jumps.jsonl", rides.flatMap { ride -> dao.jumps(ride.id).map { it.json(ride.uuid) } })
             zip.jsonLines("chunks.jsonl", chunks.map { it.json(rideUuids.getValue(it.rideId)) })
             zip.jsonLines("profiles.jsonl", dao.allSpatialProfiles().map { it.json(rideUuids.getValue(it.rideId)) })
             zip.jsonLines("trails.jsonl", trails.map { it.json(rideUuids.getValue(it.canonicalRideId)) })
-            zip.jsonLines("sections.jsonl", sections.map { it.json(trailUuids.getValue(it.trailId)) })
+            zip.jsonLines("pause-zones.jsonl", pauseZones.map { it.json(trailUuids.getValue(it.trailId)) })
+            zip.jsonLines("sections.jsonl", sections.map {
+                it.json(
+                    trailUuids.getValue(it.trailId),
+                    it.precedingPauseZoneId?.let(pauseZoneUuids::get),
+                    it.followingPauseZoneId?.let(pauseZoneUuids::get),
+                )
+            })
             zip.jsonLines("passes.jsonl", passes.map { it.json(trailUuids.getValue(it.trailId), rideUuids.getValue(it.rideId)) })
+            zip.jsonLines("stop-observations.jsonl", dao.allStopObservations().map {
+                it.json(trailUuids.getValue(it.trailId), passUuids.getValue(it.passId), stopEventUuids.getValue(it.stopEventId))
+            })
             zip.jsonLines("efforts.jsonl", dao.allEfforts().map { it.json(passUuids.getValue(it.passId), sectionUuids.getValue(it.sectionId)) })
             chunks.forEach { chunk ->
                 zip.putNextEntry(ZipEntry("telemetry/${chunk.uuid}.bin"))
@@ -65,7 +81,9 @@ class FlightLogBackup(
         try {
             extractValidated(input, directory)
             val manifest = JSONObject(File(directory, "manifest.json").readText())
-            require(manifest.getInt("format") == FORMAT_VERSION) { "Unsupported FlightLog backup version" }
+            val format = manifest.getInt("format")
+            require(format in 1..FORMAT_VERSION) { "Unsupported FlightLog backup version" }
+            if (format >= 2) require(V2_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
             return database.withTransaction { restore(directory) }
         } finally {
             directory.deleteRecursively()
@@ -89,6 +107,24 @@ class FlightLogBackup(
             val id = existing?.id ?: dao.insertRideIfAbsent(ride).also { require(it > 0) }
             if (existing == null) added++ else duplicates++
             rideIds[uuid] = id
+        }
+        val stopEventIds = mutableMapOf<String, Long>()
+        directory.forEachJsonIfPresent("stops.jsonl") { json ->
+            val uuid = json.requiredUuid("uuid")
+            val existing = dao.stopEventByUuid(uuid)
+            val startedAt = json.getLong("startedAt")
+            val endedAt = json.getLong("endedAt").also { require(it >= startedAt) }
+            val entity = StopEventEntity(
+                uuid = uuid,
+                rideId = rideIds[json.requiredUuid("rideUuid")] ?: error("Stop references unknown ride"),
+                startedAt = startedAt,
+                endedAt = endedAt,
+                latitude = json.getDouble("latitude").also { require(it in -90.0..90.0) },
+                longitude = json.getDouble("longitude").also { require(it in -180.0..180.0) },
+                accuracyMeters = json.getDouble("accuracyMeters").toFloat().also { require(it in 0f..1_000f) },
+                durationMillis = json.getLong("durationMillis").also { require(it >= 0) },
+            )
+            stopEventIds[uuid] = existing?.id ?: dao.insertStopEventIfAbsent(entity).also { require(it > 0) }
         }
         directory.forEachJson("jumps.jsonl") { json ->
             val rideId = rideIds[json.requiredUuid("rideUuid")] ?: error("Jump references unknown ride")
@@ -129,9 +165,11 @@ class FlightLogBackup(
                 distanceBin = json.getInt("distanceBin"), distanceMeters = json.getDouble("distanceMeters"),
                 recordedAt = json.getLong("recordedAt"), latitude = json.getDouble("latitude").also { require(it in -90.0..90.0) },
                 longitude = json.getDouble("longitude").also { require(it in -180.0..180.0) },
+                altitudeMeters = json.nullableDouble("altitudeMeters")?.also { require(it in -1_000.0..20_000.0) },
                 speedMps = json.getDouble("speedMps").also { require(it in 0.0..100.0) },
                 accuracyMeters = json.getDouble("accuracyMeters").toFloat().also { require(it in 0f..1_000f) },
                 observedSpanMillis = json.optLong("observedSpanMillis", 0).also { require(it >= 0) },
+                maximumSampleGapMillis = json.optLong("maximumSampleGapMillis", 0).also { require(it >= 0) },
                 roughnessScore = json.nullableDouble("roughnessScore"),
                 roughnessKind = json.nullableString("roughnessKind")?.let(RoughnessKind::valueOf),
                 roughnessConfidence = json.nullableInt("roughnessConfidence"),
@@ -154,6 +192,28 @@ class FlightLogBackup(
             trailIds[uuid] = existing?.id ?: dao.insertTrailIfAbsent(entity).also { require(it > 0) }
         }
         val sectionIds = mutableMapOf<String, Long>()
+        val pauseZoneIds = mutableMapOf<String, Long>()
+        directory.forEachJsonIfPresent("pause-zones.jsonl") { json ->
+            val uuid = json.requiredUuid("uuid")
+            val existing = dao.pauseZoneByUuid(uuid)
+            val start = json.getDouble("startMeters")
+            val end = json.getDouble("endMeters").also { require(it > start) }
+            val entity = TrailPauseZoneEntity(
+                uuid = uuid,
+                trailId = trailIds[json.requiredUuid("trailUuid")] ?: error("Pause zone references unknown trail"),
+                name = json.getString("name").take(80),
+                startMeters = start,
+                endMeters = end,
+                state = PauseZoneState.valueOf(json.getString("state")),
+                supportCount = json.getInt("supportCount").also { require(it >= 0) },
+                eligiblePassCount = json.getInt("eligiblePassCount").also { require(it >= 0) },
+                confidence = json.getInt("confidence").also { require(it in 0..100) },
+                medianPauseMillis = json.getLong("medianPauseMillis").also { require(it >= 0) },
+                createdAt = json.getLong("createdAt"),
+                updatedAt = json.getLong("updatedAt"),
+            )
+            pauseZoneIds[uuid] = existing?.id ?: dao.insertPauseZoneIfAbsent(entity).also { require(it > 0) }
+        }
         directory.forEachJson("sections.jsonl") { json ->
             val uuid = json.requiredUuid("uuid")
             val existing = dao.sectionByUuid(uuid)
@@ -163,6 +223,12 @@ class FlightLogBackup(
                 uuid = uuid, trailId = trailIds[json.requiredUuid("trailUuid")] ?: error("Section references unknown trail"),
                 name = json.getString("name").take(80), kind = SectionKind.valueOf(json.getString("kind")),
                 state = SectionState.valueOf(json.getString("state")), startMeters = start, endMeters = end,
+                precedingPauseZoneId = json.nullableString("precedingPauseZoneUuid")?.let {
+                    pauseZoneIds[it] ?: error("Section references unknown preceding pause zone")
+                },
+                followingPauseZoneId = json.nullableString("followingPauseZoneUuid")?.let {
+                    pauseZoneIds[it] ?: error("Section references unknown following pause zone")
+                },
             )
             sectionIds[uuid] = existing?.id ?: dao.insertSectionIfAbsent(entity).also { require(it > 0) }
         }
@@ -177,8 +243,27 @@ class FlightLogBackup(
                 startMeters = json.getDouble("startMeters"), endMeters = json.getDouble("endMeters"),
                 matchConfidence = json.getInt("matchConfidence").also { require(it in 0..100) },
                 interrupted = json.getBoolean("interrupted"),
+                completeCoverage = json.optBoolean("completeCoverage", false),
+                stopCount = json.optInt("stopCount", 0).also { require(it >= 0) },
+                stoppedDurationMillis = json.optLong("stoppedDurationMillis", 0).also { require(it >= 0) },
+                hasReversal = json.optBoolean("hasReversal", false),
+                bridgedGapMillis = json.optLong("bridgedGapMillis", 0).also { require(it >= 0) },
+                fullRunEligible = json.optBoolean("fullRunEligible", false),
             )
             passIds[uuid] = existing?.id ?: dao.insertPassIfAbsent(entity).also { require(it > 0) }
+        }
+        directory.forEachJsonIfPresent("stop-observations.jsonl") { json ->
+            dao.insertStopObservationIfAbsent(TrailStopObservationEntity(
+                uuid = json.requiredUuid("uuid"),
+                trailId = trailIds[json.requiredUuid("trailUuid")] ?: error("Stop observation references unknown trail"),
+                passId = passIds[json.requiredUuid("passUuid")] ?: error("Stop observation references unknown pass"),
+                stopEventId = stopEventIds[json.requiredUuid("stopEventUuid")] ?: error("Stop observation references unknown stop"),
+                distanceMeters = json.getDouble("distanceMeters"),
+                startMeters = json.getDouble("startMeters"),
+                endMeters = json.getDouble("endMeters"),
+                durationMillis = json.getLong("durationMillis").also { require(it >= 0) },
+                confidence = json.getInt("confidence").also { require(it in 0..100) },
+            ))
         }
         directory.forEachJson("efforts.jsonl") { json ->
             dao.insertEffortIfAbsent(SectionEffortEntity(
@@ -193,6 +278,10 @@ class FlightLogBackup(
                 sampleQuality = json.getInt("sampleQuality").also { require(it in 0..100) },
                 lateralOffsetMeters = json.getDouble("lateralOffsetMeters"),
                 lateralUncertaintyMeters = json.getDouble("lateralUncertaintyMeters"), valid = json.getBoolean("valid"),
+                invalidReason = json.nullableString("invalidReason")?.let(EffortInvalidReason::valueOf),
+                reachedWithoutPriorStop = json.optBoolean("reachedWithoutPriorStop", false),
+                estimated = json.optBoolean("estimated", false),
+                bridgedGapMillis = json.optLong("bridgedGapMillis", 0).also { require(it >= 0) },
             ))
         }
         return BackupImportResult(added, duplicates)
@@ -237,7 +326,7 @@ class FlightLogBackup(
                 zip.closeEntry()
             }
         }
-        require(METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
+        require(REQUIRED_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
     }
 
     private fun requireRideRanges(ride: RideEntity) {
@@ -247,13 +336,15 @@ class FlightLogBackup(
 
     companion object {
         const val MIME_TYPE = "application/zip"
-        private const val FORMAT_VERSION = 1
+        private const val FORMAT_VERSION = 2
         private const val MAX_ENTRY_BYTES = 512L * 1024 * 1024
         private const val MAX_TOTAL_BYTES = 2L * 1024 * 1024 * 1024
-        private val METADATA = setOf(
+        private val REQUIRED_METADATA = setOf(
             "manifest.json", "rides.jsonl", "jumps.jsonl", "chunks.jsonl", "profiles.jsonl",
             "trails.jsonl", "sections.jsonl", "passes.jsonl", "efforts.jsonl",
         )
+        private val V2_METADATA = setOf("stops.jsonl", "pause-zones.jsonl", "stop-observations.jsonl")
+        private val METADATA = REQUIRED_METADATA + V2_METADATA
     }
 }
 
@@ -273,6 +364,10 @@ private suspend fun File.forEachJson(name: String, action: suspend (JSONObject) 
     }
 }
 
+private suspend fun File.forEachJsonIfPresent(name: String, action: suspend (JSONObject) -> Unit) {
+    if (File(this, name).isFile) forEachJson(name, action)
+}
+
 private fun JSONObject.putNullable(name: String, value: Any?): JSONObject = put(name, value ?: JSONObject.NULL)
 private fun JSONObject.nullableString(name: String): String? = if (isNull(name)) null else getString(name)
 private fun JSONObject.nullableLong(name: String): Long? = if (isNull(name)) null else getLong(name)
@@ -284,6 +379,9 @@ private fun RideEntity.json() = JSONObject().put("uuid", uuid).put("startedAt", 
     .put("state", state.name).put("distanceMeters", distanceMeters).put("movingTimeMillis", movingTimeMillis)
     .put("maxSpeedMps", maxSpeedMps).putNullable("mountingMode", mountingMode?.name)
     .putNullable("archivedAt", archivedAt).put("analysisVersion", analysisVersion)
+private fun StopEventEntity.json(rideUuid: String) = JSONObject().put("uuid", uuid).put("rideUuid", rideUuid)
+    .put("startedAt", startedAt).put("endedAt", endedAt).put("latitude", latitude).put("longitude", longitude)
+    .put("accuracyMeters", accuracyMeters).put("durationMillis", durationMillis)
 private fun JumpEventEntity.json(rideUuid: String) = JSONObject().put("rideUuid", rideUuid).put("takeoffAt", takeoffAt).put("landingAt", landingAt)
     .put("estimatedFlightSeconds", estimatedFlightSeconds).put("estimatedHeightMeters", estimatedHeightMeters).put("estimatedDistanceMeters", estimatedDistanceMeters)
     .putNullable("correctedFlightSeconds", correctedFlightSeconds).putNullable("correctedHeightMeters", correctedHeightMeters).putNullable("correctedDistanceMeters", correctedDistanceMeters)
@@ -292,19 +390,37 @@ private fun TelemetryChunkEntity.json(rideUuid: String) = JSONObject().put("uuid
     .put("startedAt", startedAt).put("endedAt", endedAt).put("encodingVersion", encodingVersion).put("sampleCount", sampleCount)
     .put("checksum", checksum).putNullable("expiresAt", expiresAt)
 private fun SpatialProfileEntity.json(rideUuid: String) = JSONObject().put("rideUuid", rideUuid).put("distanceBin", distanceBin).put("distanceMeters", distanceMeters)
-    .put("recordedAt", recordedAt).put("latitude", latitude).put("longitude", longitude).put("speedMps", speedMps).put("accuracyMeters", accuracyMeters)
+    .put("recordedAt", recordedAt).put("latitude", latitude).put("longitude", longitude).putNullable("altitudeMeters", altitudeMeters)
+    .put("speedMps", speedMps).put("accuracyMeters", accuracyMeters)
     .put("observedSpanMillis", observedSpanMillis)
+    .put("maximumSampleGapMillis", maximumSampleGapMillis)
     .putNullable("roughnessScore", roughnessScore).putNullable("roughnessKind", roughnessKind?.name).putNullable("roughnessConfidence", roughnessConfidence)
 private fun TrailEntity.json(canonicalRideUuid: String) = JSONObject().put("uuid", uuid).put("name", name).put("state", state.name)
     .put("canonicalRideUuid", canonicalRideUuid).put("lengthMeters", lengthMeters).put("startMeters", startMeters).put("endMeters", endMeters)
     .put("supportCount", supportCount).put("createdAt", createdAt).put("updatedAt", updatedAt)
-private fun TrailSectionEntity.json(trailUuid: String) = JSONObject().put("uuid", uuid).put("trailUuid", trailUuid).put("name", name)
+private fun TrailPauseZoneEntity.json(trailUuid: String) = JSONObject().put("uuid", uuid).put("trailUuid", trailUuid)
+    .put("name", name).put("startMeters", startMeters).put("endMeters", endMeters).put("state", state.name)
+    .put("supportCount", supportCount).put("eligiblePassCount", eligiblePassCount).put("confidence", confidence)
+    .put("medianPauseMillis", medianPauseMillis).put("createdAt", createdAt).put("updatedAt", updatedAt)
+private fun TrailSectionEntity.json(
+    trailUuid: String,
+    precedingPauseZoneUuid: String?,
+    followingPauseZoneUuid: String?,
+) = JSONObject().put("uuid", uuid).put("trailUuid", trailUuid).put("name", name)
     .put("kind", kind.name).put("state", state.name).put("startMeters", startMeters).put("endMeters", endMeters)
+    .putNullable("precedingPauseZoneUuid", precedingPauseZoneUuid).putNullable("followingPauseZoneUuid", followingPauseZoneUuid)
 private fun TrailPassEntity.json(trailUuid: String, rideUuid: String) = JSONObject().put("uuid", uuid).put("trailUuid", trailUuid).put("rideUuid", rideUuid)
     .put("startedAt", startedAt).put("endedAt", endedAt).put("startMeters", startMeters).put("endMeters", endMeters)
-    .put("matchConfidence", matchConfidence).put("interrupted", interrupted)
+    .put("matchConfidence", matchConfidence).put("interrupted", interrupted).put("completeCoverage", completeCoverage)
+    .put("stopCount", stopCount).put("stoppedDurationMillis", stoppedDurationMillis).put("hasReversal", hasReversal)
+    .put("bridgedGapMillis", bridgedGapMillis).put("fullRunEligible", fullRunEligible)
+private fun TrailStopObservationEntity.json(trailUuid: String, passUuid: String, stopEventUuid: String) = JSONObject()
+    .put("uuid", uuid).put("trailUuid", trailUuid).put("passUuid", passUuid).put("stopEventUuid", stopEventUuid)
+    .put("distanceMeters", distanceMeters).put("startMeters", startMeters).put("endMeters", endMeters)
+    .put("durationMillis", durationMillis).put("confidence", confidence)
 private fun SectionEffortEntity.json(passUuid: String, sectionUuid: String) = JSONObject().put("uuid", uuid).put("passUuid", passUuid).put("sectionUuid", sectionUuid)
     .put("elapsedMillis", elapsedMillis).put("entrySpeedMps", entrySpeedMps).put("minimumSpeedMps", minimumSpeedMps).put("averageSpeedMps", averageSpeedMps)
     .put("exitSpeedMps", exitSpeedMps).put("maximumSpeedMps", maximumSpeedMps).putNullable("roughnessScore", roughnessScore)
     .putNullable("roughnessKind", roughnessKind?.name).put("sampleQuality", sampleQuality).put("lateralOffsetMeters", lateralOffsetMeters)
-    .put("lateralUncertaintyMeters", lateralUncertaintyMeters).put("valid", valid)
+    .put("lateralUncertaintyMeters", lateralUncertaintyMeters).put("valid", valid).putNullable("invalidReason", invalidReason?.name)
+    .put("reachedWithoutPriorStop", reachedWithoutPriorStop).put("estimated", estimated).put("bridgedGapMillis", bridgedGapMillis)

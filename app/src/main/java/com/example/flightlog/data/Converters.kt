@@ -6,6 +6,8 @@ import com.example.flightlog.domain.RideState
 import com.example.flightlog.domain.SensorQuality
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.RoughnessKind
+import com.example.flightlog.domain.EffortInvalidReason
+import com.example.flightlog.domain.PauseZoneState
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.domain.TelemetryKind
@@ -30,4 +32,8 @@ class Converters {
     @TypeConverter fun sectionState(value: SectionState) = value.name
     @TypeConverter fun roughnessKind(value: String?) = value?.let(RoughnessKind::valueOf)
     @TypeConverter fun roughnessKind(value: RoughnessKind?) = value?.name
+    @TypeConverter fun effortInvalidReason(value: String?) = value?.let(EffortInvalidReason::valueOf)
+    @TypeConverter fun effortInvalidReason(value: EffortInvalidReason?) = value?.name
+    @TypeConverter fun pauseZoneState(value: String) = PauseZoneState.valueOf(value)
+    @TypeConverter fun pauseZoneState(value: PauseZoneState) = value.name
 }

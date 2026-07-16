@@ -49,15 +49,19 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.data.RideEntity
+import com.example.flightlog.data.SpatialProfileEntity
 import com.example.flightlog.data.TrailEntity
 import com.example.flightlog.data.TrailSectionEntity
 import com.example.flightlog.data.TrailPassEntity
 import com.example.flightlog.data.SectionEffortEntity
 import com.example.flightlog.data.TrackPointEntity
+import com.example.flightlog.data.StopEventEntity
+import com.example.flightlog.data.TrailPauseZoneEntity
 import com.example.flightlog.domain.AggregatePeriod
 import com.example.flightlog.domain.JumpStatus
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.ComparisonMode
+import com.example.flightlog.domain.EffortInvalidReason
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.domain.TrailState
 import com.example.flightlog.domain.RideState
@@ -72,9 +76,20 @@ import com.example.flightlog.tracking.RideTrackingService
 import com.example.flightlog.tracking.RecordingSettings
 import com.example.flightlog.ui.AppScreen
 import com.example.flightlog.ui.FlightLogViewModel
+import com.example.flightlog.ui.TrailBoundaryEditor
+import com.example.flightlog.ui.buildTrailMapRoute
+import com.example.flightlog.ui.buildTrailStopPoints
 import com.example.flightlog.ui.BackupUiState
 import com.example.flightlog.export.FlightLogBackup
 import com.example.flightlog.ui.TrailMap
+import com.example.flightlog.ui.TrailResultTab
+import com.example.flightlog.ui.SplitEffortContext
+import com.example.flightlog.ui.SplitRouteScrubber
+import com.example.flightlog.ui.PauseZoneEvidence
+import com.example.flightlog.ui.PauseZoneEditor
+import com.example.flightlog.ui.FullRunsPanel
+import com.example.flightlog.ui.routeForRange
+import com.example.flightlog.ui.pointAtDistance
 import com.example.flightlog.maps.MapStyle
 import com.example.flightlog.ui.theme.Amber
 import com.example.flightlog.ui.theme.FlightLogTheme
@@ -104,6 +119,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val sections by vm.sections.collectAsStateWithLifecycle()
     val passes by vm.passes.collectAsStateWithLifecycle()
     val efforts by vm.efforts.collectAsStateWithLifecycle()
+    val pauseZones by vm.pauseZones.collectAsStateWithLifecycle()
     val live by vm.live.collectAsStateWithLifecycle()
     val screen by vm.screen.collectAsStateWithLifecycle()
     val selectedRideId by vm.selectedRideId.collectAsStateWithLifecycle()
@@ -114,6 +130,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val comparisonMode by vm.comparisonMode.collectAsStateWithLifecycle()
     val comparisonPointsA by vm.comparisonPointsA.collectAsStateWithLifecycle()
     val comparisonPointsB by vm.comparisonPointsB.collectAsStateWithLifecycle()
+    val selectedTrailProfiles by vm.selectedTrailProfiles.collectAsStateWithLifecycle()
     val telemetryBytes by vm.telemetryBytes.collectAsStateWithLifecycle()
     val motionBytes by vm.motionBytes.collectAsStateWithLifecycle()
     val nextMotionExpiry by vm.nextMotionExpiry.collectAsStateWithLifecycle()
@@ -121,6 +138,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val backupState by vm.backupState.collectAsStateWithLifecycle()
     val points by vm.selectedPoints.collectAsStateWithLifecycle()
     val selectedJumps by vm.selectedRideJumps.collectAsStateWithLifecycle()
+    val selectedStops by vm.selectedRideStops.collectAsStateWithLifecycle()
     val imperial by vm.imperial.collectAsStateWithLifecycle()
     val recordingSettings by vm.recordingSettings.collectAsStateWithLifecycle()
     val userMapApiKey by vm.userMapApiKey.collectAsStateWithLifecycle()
@@ -280,7 +298,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                 when (screen) {
                     AppScreen.RIDE -> HomeScreen(rides, points, selectedJumps, imperial, recordingSettings, effectiveMapApiKey, mapStyle, startRide, openMapSettings)
                     AppScreen.HISTORY -> HistoryScreen(rides, imperial, vm::openRide)
-                    AppScreen.TRAILS -> TrailsScreen(trails, passes, vm::confirmTrail, vm::openTrail)
+                    AppScreen.TRAILS -> TrailsScreen(trails, sections, passes, efforts, imperial, vm::openTrail)
                     AppScreen.STATS -> StatsScreen(rides, jumps, imperial)
                     AppScreen.SETTINGS -> SettingsScreen(
                         imperial = imperial,
@@ -313,6 +331,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         ride = rides.firstOrNull { it.id == selectedRideId },
                         points = points,
                         jumps = selectedJumps,
+                        stops = selectedStops,
                         mapApiKey = effectiveMapApiKey,
                         mapStyle = mapStyle,
                         imperial = imperial,
@@ -341,6 +360,8 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         selectedPassBId = selectedPassBId,
                         pointsA = comparisonPointsA,
                         pointsB = comparisonPointsB,
+                        canonicalProfiles = selectedTrailProfiles,
+                        pauseZones = pauseZones.filter { it.trailId == selectedTrailId },
                         imperial = imperial,
                         mapApiKey = effectiveMapApiKey,
                         mapStyle = mapStyle,
@@ -349,8 +370,10 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onPassA = { vm.selectedPassAId.value = it },
                         onPassB = { vm.selectedPassBId.value = it },
                         onConfirmSection = vm::confirmSection,
+                        onConfirmTrail = vm::confirmTrail,
                         onAddSection = vm::addManualSection,
                         onUpdateSection = vm::updateSection,
+                        onSavePauseZones = vm::savePauseZones,
                     )
                 }
             }
@@ -600,6 +623,7 @@ private fun ReviewScreen(
     ride: RideEntity?,
     points: List<com.example.flightlog.data.TrackPointEntity>,
     jumps: List<JumpEventEntity>,
+    stops: List<StopEventEntity>,
     mapApiKey: String,
     mapStyle: MapStyle,
     imperial: Boolean,
@@ -650,6 +674,14 @@ private fun ReviewScreen(
             TrailMap(
                 points = points,
                 jumps = jumps,
+                stopPoints = stops.map { stop ->
+                    TrackPointEntity(
+                        rideId = stop.rideId, recordedAt = stop.startedAt,
+                        latitude = stop.latitude, longitude = stop.longitude,
+                        altitudeMeters = null, speedMps = 0.0, bearingDegrees = null,
+                        accuracyMeters = stop.accuracyMeters,
+                    )
+                },
                 apiKey = mapApiKey,
                 mapStyle = mapStyle,
                 modifier = Modifier.matchParentSize(),
@@ -764,57 +796,47 @@ private fun JumpDetailScreen(jump: JumpEventEntity?, imperial: Boolean, onBack: 
 @Composable
 private fun TrailsScreen(
     trails: List<TrailEntity>,
+    sections: List<TrailSectionEntity>,
     passes: List<TrailPassEntity>,
-    onConfirm: (Long, String, Double, Double) -> Unit,
+    efforts: List<SectionEffortEntity>,
+    imperial: Boolean,
     onOpen: (Long) -> Unit,
 ) {
-    var confirming by remember { mutableStateOf<TrailEntity?>(null) }
-    var name by rememberSaveable { mutableStateOf("") }
-    var startMeters by rememberSaveable { mutableStateOf("0") }
-    var endMeters by rememberSaveable { mutableStateOf("") }
-    confirming?.let { trail ->
-        AlertDialog(
-            onDismissRequest = { confirming = null },
-            title = { Text("Confirm trail") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(name, { name = it.take(80) }, label = { Text("Trail name") }, singleLine = true)
-                    OutlinedTextField(startMeters, { startMeters = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Start distance (m)") }, singleLine = true)
-                    OutlinedTextField(endMeters, { endMeters = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Finish distance (m)") }, singleLine = true)
-                    Text("Adjust these spatial boundaries if ride recording began early or ended late.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            },
-            confirmButton = { Button(onClick = {
-                val start = startMeters.toDoubleOrNull()
-                val end = endMeters.toDoubleOrNull()
-                if (start != null && end != null && start < end && end <= trail.lengthMeters) {
-                    onConfirm(trail.id, name, start, end); confirming = null
-                }
-            }) { Text("Confirm") } },
-            dismissButton = { TextButton(onClick = { confirming = null }) { Text("Cancel") } },
-        )
-    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Trail comparisons", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold) }
         item { Text("Repeated routes appear here after two same-direction matches. Trail timing uses spatial boundaries, not ride Start and Finish.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (trails.isEmpty()) item { EmptyCard("No repeated trails yet", "Record the same trail twice to receive a suggestion.") }
         items(trails, key = { it.id }) { trail ->
+            val trailPasses = passes.filter { it.trailId == trail.id }
+            val wholeSectionId = sections.firstOrNull {
+                it.trailId == trail.id && it.kind == com.example.flightlog.domain.SectionKind.WHOLE_TRAIL
+            }?.id
+            val latestPass = trailPasses.maxByOrNull { it.startedAt }
+            val latestEffort = efforts.firstOrNull {
+                it.passId == latestPass?.id && it.sectionId == wholeSectionId && it.valid
+            }
             Card(onClick = { onOpen(trail.id) }) {
                 Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(trail.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                            Text("${passes.count { it.trailId == trail.id }} passes • ${String.format(Locale.US, "%.1f km", trail.lengthMeters / 1_000)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (latestEffort != null) {
+                                Text(
+                                    "Latest: ${formatSpeed(latestEffort.averageSpeedMps, imperial)} average • ${formatSpeed(latestEffort.exitSpeedMps, imperial)} exit",
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            } else {
+                                Text(
+                                    "${trailPasses.size} matched runs • No complete speed comparison yet",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                         Icon(Icons.Default.ChevronRight, "Open trail")
                     }
                     if (trail.state == TrailState.SUGGESTED) {
-                        Button(onClick = {
-                            name = trail.name
-                            startMeters = trail.startMeters.toInt().toString()
-                            endMeters = trail.endMeters.toInt().toString()
-                            confirming = trail
-                        }) { Text("Review and confirm") }
+                        Button(onClick = { onOpen(trail.id) }) { Text("Set trail boundaries") }
                     }
                 }
             }
@@ -827,26 +849,74 @@ private fun TrailDetailScreen(
     trail: TrailEntity?, sections: List<TrailSectionEntity>, passes: List<TrailPassEntity>,
     efforts: List<SectionEffortEntity>, rides: List<RideEntity>, mode: ComparisonMode,
     selectedPassAId: Long?, selectedPassBId: Long?, pointsA: List<TrackPointEntity>, pointsB: List<TrackPointEntity>,
+    canonicalProfiles: List<SpatialProfileEntity>, pauseZones: List<TrailPauseZoneEntity>,
     imperial: Boolean, mapApiKey: String, mapStyle: MapStyle, onBack: () -> Unit,
     onMode: (ComparisonMode) -> Unit, onPassA: (Long) -> Unit, onPassB: (Long) -> Unit,
-    onConfirmSection: (Long) -> Unit, onAddSection: (Long, String, Double, Double) -> Unit,
+    onConfirmSection: (Long) -> Unit, onConfirmTrail: (Long, String, Double, Double) -> Unit,
+    onAddSection: (Long, String, Double, Double) -> Unit,
     onUpdateSection: (Long, String, Double, Double) -> Unit,
+    onSavePauseZones: (Long, List<com.example.flightlog.ui.PauseZoneDraft>) -> Unit,
 ) {
     if (trail == null) { EmptyCard("Trail unavailable", "Return to trail comparisons."); return }
+    val passIds = passes.mapTo(hashSetOf()) { it.id }
+    val trailSectionIds = sections.mapTo(hashSetOf()) { it.id }
+    val trailEfforts = efforts.filter { it.passId in passIds && it.sectionId in trailSectionIds }
+    val comparableSectionCount = sections.count { section ->
+        trailEfforts.filter { it.sectionId == section.id && it.valid }.map { it.passId }.distinct().size >= 2
+    }
+    val comparisonReady = passes.size >= 2 && comparableSectionCount > 0
+    val wholeTrailSection = sections.firstOrNull { it.kind == com.example.flightlog.domain.SectionKind.WHOLE_TRAIL }
+    val splitSections = sections.filter { it.kind == com.example.flightlog.domain.SectionKind.SPLIT }.sortedBy { it.startMeters }
+    val activePauseZones = pauseZones.filter {
+        it.state == com.example.flightlog.domain.PauseZoneState.AUTOMATIC ||
+            it.state == com.example.flightlog.domain.PauseZoneState.USER_LOCKED
+    }.sortedBy { it.startMeters }
+    val savedTrailMap = remember(canonicalProfiles, trail.startMeters, trail.endMeters) {
+        buildTrailMapRoute(canonicalProfiles, trail.startMeters, trail.endMeters)
+    }
+    val pauseZonePoints = remember(canonicalProfiles, activePauseZones) {
+        activePauseZones.mapNotNull { zone -> pointAtDistance(canonicalProfiles, (zone.startMeters + zone.endMeters) / 2.0) }
+    }
+    val splitRoutes = remember(canonicalProfiles, splitSections) {
+        splitSections.map { routeForRange(canonicalProfiles, it.startMeters, it.endMeters) }
+    }
+    val pauseZoneRoutes = remember(canonicalProfiles, activePauseZones) {
+        activePauseZones.map { routeForRange(canonicalProfiles, it.startMeters, it.endMeters) }
+    }
+    val showingRunComparison = comparisonReady && mode == ComparisonMode.A_B
+    var resultTab by rememberSaveable(trail.id) { mutableStateOf(TrailResultTab.SPLITS) }
+    var splitContext by rememberSaveable(trail.id) { mutableStateOf(SplitEffortContext.ALL) }
+    var selectedSplitIndex by rememberSaveable(trail.id) { mutableIntStateOf(0) }
+    val safeSelectedSplitIndex = selectedSplitIndex.coerceIn(0, (splitSections.size - 1).coerceAtLeast(0))
+    val selectedSplit = splitSections.getOrNull(safeSelectedSplitIndex)
+    var showingSplitEditor by rememberSaveable(trail.id) { mutableStateOf(false) }
+    var renamingSplit by remember { mutableStateOf<TrailSectionEntity?>(null) }
+    var splitRenameText by rememberSaveable(trail.id) { mutableStateOf("") }
     var addingSection by rememberSaveable { mutableStateOf(false) }
     var sectionName by rememberSaveable { mutableStateOf("") }
     var sectionStart by rememberSaveable { mutableStateOf("") }
     var sectionEnd by rememberSaveable { mutableStateOf("") }
     var editingSection by remember { mutableStateOf<TrailSectionEntity?>(null) }
+    var showingBoundaryEditor by rememberSaveable(trail.id) { mutableStateOf(trail.state == TrailState.SUGGESTED) }
+    fun beginEditing(section: TrailSectionEntity) {
+        if (section.kind == com.example.flightlog.domain.SectionKind.WHOLE_TRAIL) {
+            showingBoundaryEditor = true
+            return
+        }
+        sectionName = section.name
+        sectionStart = section.startMeters.toInt().toString()
+        sectionEnd = section.endMeters.toInt().toString()
+        editingSection = section
+    }
     editingSection?.let { editing ->
         AlertDialog(
             onDismissRequest = { editingSection = null },
             title = { Text("Edit section") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(sectionName, { sectionName = it.take(80) }, label = { Text("Name") }, singleLine = true)
-                    OutlinedTextField(sectionStart, { sectionStart = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Start distance (m)") }, singleLine = true)
-                    OutlinedTextField(sectionEnd, { sectionEnd = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("End distance (m)") }, singleLine = true)
+                    OutlinedTextField(sectionName, { sectionName = it.take(80) }, label = { Text("Section name") }, singleLine = true)
+                    OutlinedTextField(sectionStart, { sectionStart = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Section starts at (m into trail)") }, singleLine = true)
+                    OutlinedTextField(sectionEnd, { sectionEnd = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Section ends at (m into trail)") }, singleLine = true)
                 }
             },
             confirmButton = { Button(onClick = {
@@ -856,6 +926,62 @@ private fun TrailDetailScreen(
                 }
             }) { Text("Save") } },
             dismissButton = { TextButton(onClick = { editingSection = null }) { Text("Cancel") } },
+        )
+    }
+    if (showingBoundaryEditor) {
+        TrailBoundaryEditor(
+            trailId = trail.id,
+            trailName = trail.name,
+            profiles = canonicalProfiles,
+            passes = passes,
+            initialStartMeters = trail.startMeters,
+            initialEndMeters = trail.endMeters,
+            imperial = imperial,
+            apiKey = mapApiKey,
+            mapStyle = mapStyle,
+            allowNameEdit = trail.state == TrailState.SUGGESTED,
+            onDismiss = { showingBoundaryEditor = false },
+            onSave = { name, start, end ->
+                onConfirmTrail(trail.id, name, start, end)
+                showingBoundaryEditor = false
+            },
+        )
+    }
+    if (showingSplitEditor) {
+        PauseZoneEditor(
+            trailId = trail.id,
+            trailStartMeters = trail.startMeters,
+            trailEndMeters = trail.endMeters,
+            profiles = canonicalProfiles,
+            zones = pauseZones,
+            apiKey = mapApiKey,
+            mapStyle = mapStyle,
+            onDismiss = { showingSplitEditor = false },
+            onSave = { drafts ->
+                onSavePauseZones(trail.id, drafts)
+                showingSplitEditor = false
+            },
+        )
+    }
+    renamingSplit?.let { split ->
+        AlertDialog(
+            onDismissRequest = { renamingSplit = null },
+            title = { Text("Rename split") },
+            text = {
+                OutlinedTextField(
+                    value = splitRenameText,
+                    onValueChange = { splitRenameText = it.take(80) },
+                    label = { Text("Split name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    onUpdateSection(split.id, splitRenameText, split.startMeters, split.endMeters)
+                    renamingSplit = null
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { renamingSplit = null }) { Text("Cancel") } },
         )
     }
     if (addingSection) AlertDialog(
@@ -881,50 +1007,166 @@ private fun TrailDetailScreen(
         TopAppBar(
             title = { Text(trail.name) },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-            actions = { IconButton(onClick = { addingSection = true }) { Icon(Icons.Default.Add, "Add section") } },
+            actions = {
+                if (comparisonReady) IconButton(onClick = { addingSection = true }) { Icon(Icons.Default.Add, "Add section") }
+            },
             windowInsets = WindowInsets(0, 0, 0, 0),
         )
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-            ComparisonMode.entries.forEachIndexed { index, value ->
-                SegmentedButton(selected = mode == value, onClick = { onMode(value) }, shape = SegmentedButtonDefaults.itemShape(index, 3)) {
-                    Text(when (value) { ComparisonMode.TREND -> "Trend"; ComparisonMode.A_B -> "A/B"; ComparisonMode.VIRTUAL_BEST -> "Virtual best" })
-                }
+            listOf(TrailResultTab.SPLITS to "Splits", TrailResultTab.FULL_RUNS to "Full runs").forEachIndexed { index, (tab, label) ->
+                SegmentedButton(
+                    selected = resultTab == tab,
+                    onClick = { resultTab = tab },
+                    shape = SegmentedButtonDefaults.itemShape(index, 2),
+                ) { Text(label) }
             }
         }
-        if (mode == ComparisonMode.A_B) {
-            Text("Choose A", Modifier.padding(start = 16.dp, top = 8.dp), style = MaterialTheme.typography.labelMedium)
-            PassPicker(passes, selectedPassAId, rides, onPassA)
-            Text("Choose B", Modifier.padding(start = 16.dp, top = 4.dp), style = MaterialTheme.typography.labelMedium)
-            PassPicker(passes, selectedPassBId, rides, onPassB)
-        }
-        TrailMap(
-            points = pointsA, comparisonPoints = pointsB.takeIf { mode == ComparisonMode.A_B }.orEmpty(),
-            jumps = emptyList(), apiKey = mapApiKey, mapStyle = mapStyle,
-            modifier = Modifier.fillMaxWidth().height(230.dp), fitRoute = true,
-        )
-        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (passes.size < 2) item { EmptyCard("More runs needed", "A second matched pass unlocks meaningful comparisons.") }
-            if (mode == ComparisonMode.VIRTUAL_BEST) item {
-                val passIds = passes.mapTo(hashSetOf()) { it.id }
-                val bests = sections.filter { it.state == SectionState.CONFIRMED }.mapNotNull { section ->
-                    efforts.filter { it.sectionId == section.id && it.passId in passIds && it.valid }.minOfOrNull { it.elapsedMillis }
-                }
-                Surface(color = TrailCyan.copy(alpha = .14f), shape = RoundedCornerShape(14.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                        Text("THEORETICAL VIRTUAL BEST", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
-                        Text(if (bests.isEmpty()) "—" else formatDuration(bests.sum()), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-                        Text("Fastest valid effort from each confirmed section; not a single recorded run.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (comparisonReady) {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                ComparisonMode.entries.forEachIndexed { index, value ->
+                    SegmentedButton(selected = mode == value, onClick = { onMode(value) }, shape = SegmentedButtonDefaults.itemShape(index, 3)) {
+                        Text(when (value) { ComparisonMode.TREND -> "Progress"; ComparisonMode.A_B -> "Compare"; ComparisonMode.VIRTUAL_BEST -> "Best" })
                     }
                 }
             }
-            items(sections, key = { it.id }) { section ->
-                SectionComparisonCard(
-                    section, passes, efforts, selectedPassAId, selectedPassBId, mode, imperial, onConfirmSection,
-                    onEdit = {
-                        sectionName = section.name; sectionStart = section.startMeters.toInt().toString(); sectionEnd = section.endMeters.toInt().toString()
-                        editingSection = section
-                    },
-                )
+        }
+        if (comparisonReady && mode == ComparisonMode.A_B) {
+            val selectablePasses = if (resultTab == TrailResultTab.FULL_RUNS) passes.filter { it.fullRunEligible } else passes
+            Text("Run A", Modifier.padding(start = 16.dp, top = 8.dp), style = MaterialTheme.typography.labelMedium)
+            PassPicker(selectablePasses, selectedPassAId, rides, onPassA)
+            Text("Run B", Modifier.padding(start = 16.dp, top = 4.dp), style = MaterialTheme.typography.labelMedium)
+            PassPicker(selectablePasses, selectedPassBId, rides, onPassB)
+        }
+        TrailMap(
+            points = if (showingRunComparison) pointsA else savedTrailMap.fullRoute.ifEmpty { pointsA },
+            comparisonPoints = pointsB.takeIf { showingRunComparison }.orEmpty(),
+            highlightedPoints = savedTrailMap.highlightedRoute.takeUnless { showingRunComparison }.orEmpty(),
+            stopPoints = pauseZonePoints,
+            splitRoutes = splitRoutes.takeIf { resultTab == TrailResultTab.SPLITS && !showingRunComparison }.orEmpty(),
+            pauseZoneRoutes = pauseZoneRoutes.takeUnless { showingRunComparison }.orEmpty(),
+            selectedSplitIndex = safeSelectedSplitIndex,
+            jumps = emptyList(), apiKey = mapApiKey, mapStyle = mapStyle,
+            modifier = Modifier.fillMaxWidth().height(230.dp), fitRoute = true,
+        )
+        if (resultTab == TrailResultTab.SPLITS && splitSections.isNotEmpty()) {
+            SplitRouteScrubber(
+                trailStartMeters = trail.startMeters,
+                trailEndMeters = trail.endMeters,
+                splits = splitSections,
+                zones = pauseZones,
+                selectedIndex = safeSelectedSplitIndex,
+                onSelect = { selectedSplitIndex = it },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (resultTab == TrailResultTab.FULL_RUNS) {
+                item {
+                    FullRunsPanel(
+                        passes = passes,
+                        efforts = trailEfforts,
+                        wholeTrailSection = wholeTrailSection,
+                        splitSections = splitSections,
+                        mode = mode,
+                        selectedPassAId = selectedPassAId,
+                        selectedPassBId = selectedPassBId,
+                        imperial = imperial,
+                    )
+                }
+            } else {
+                item { PauseZoneEvidence(pauseZones, onEdit = { showingSplitEditor = true }) }
+                if (!comparisonReady) item {
+                    ComparisonUnavailableCard(
+                        matchedRuns = passes.size,
+                        hasInterruptedData = trailEfforts.any { !it.valid },
+                        onAdjustBoundaries = { wholeTrailSection?.let(::beginEditing) },
+                    )
+                }
+                if (comparisonReady && mode == ComparisonMode.VIRTUAL_BEST) item {
+                    val bests = splitSections.mapNotNull { section ->
+                        efforts.filter {
+                            it.sectionId == section.id && it.passId in passIds && it.valid &&
+                                (splitContext == SplitEffortContext.ALL || it.reachedWithoutPriorStop)
+                        }.minOfOrNull { it.elapsedMillis }
+                    }
+                    Surface(color = TrailCyan.copy(alpha = .14f), shape = RoundedCornerShape(14.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                            Text("THEORETICAL VIRTUAL BEST", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
+                            Text(if (bests.isEmpty()) "No valid splits yet" else formatDuration(bests.sum()), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+                            Text("Fastest valid effort from each timed split; not a single recorded run.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = splitContext == SplitEffortContext.ALL,
+                            onClick = { splitContext = SplitEffortContext.ALL },
+                            label = { Text("All efforts") },
+                        )
+                        FilterChip(
+                            selected = splitContext == SplitEffortContext.NONSTOP,
+                            onClick = { splitContext = SplitEffortContext.NONSTOP },
+                            label = { Text("Reached nonstop") },
+                        )
+                    }
+                }
+                selectedSplit?.let { split ->
+                    item(key = split.id) {
+                        SectionComparisonCard(
+                            split, passes, efforts, selectedPassAId, selectedPassBId, mode, imperial, onConfirmSection,
+                            onEdit = {
+                                splitRenameText = split.name
+                                renamingSplit = split
+                            },
+                            nonstopOnly = splitContext == SplitEffortContext.NONSTOP,
+                        )
+                    }
+                    val features = sections.filter {
+                        it.kind != com.example.flightlog.domain.SectionKind.SPLIT &&
+                            it.kind != com.example.flightlog.domain.SectionKind.WHOLE_TRAIL &&
+                            it.startMeters >= split.startMeters && it.endMeters <= split.endMeters
+                    }
+                    if (features.isNotEmpty()) item {
+                        Text(
+                            "Inside this split: ${features.joinToString { it.name }}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComparisonUnavailableCard(
+    matchedRuns: Int,
+    hasInterruptedData: Boolean,
+    onAdjustBoundaries: () -> Unit,
+) {
+    Card {
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(Icons.Default.Speed, null, tint = Amber)
+                Text("No speed comparison yet", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
+            Text("$matchedRuns matched ${if (matchedRuns == 1) "ride" else "rides"}", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
+            Text(
+                when {
+                    matchedRuns < 2 -> "Ride this trail again in the same direction to create a comparison."
+                    hasInterruptedData -> "The rides were found, but a stop or GPS gap interrupted the comparable part of the trail."
+                    else -> "The rides do not both cross the full trail boundaries. Trim the start or finish to the portion they share."
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (matchedRuns >= 2) {
+                Button(onClick = onAdjustBoundaries, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Tune, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Adjust trail start and finish")
+                }
             }
         }
     }
@@ -944,13 +1186,30 @@ private fun PassPicker(passes: List<TrailPassEntity>, selectedId: Long?, rides: 
 private fun SectionComparisonCard(
     section: TrailSectionEntity, passes: List<TrailPassEntity>, allEfforts: List<SectionEffortEntity>,
     passAId: Long?, passBId: Long?, mode: ComparisonMode, imperial: Boolean, onConfirm: (Long) -> Unit, onEdit: () -> Unit,
+    nonstopOnly: Boolean = false,
 ) {
     val passById = passes.associateBy { it.id }
-    val efforts = allEfforts.filter { it.sectionId == section.id && it.valid && it.passId in passById }.sortedByDescending { passById[it.passId]?.startedAt }
+    val recordedEfforts = allEfforts.filter { it.sectionId == section.id && it.passId in passById }
+        .sortedByDescending { passById[it.passId]?.startedAt }
+    val efforts = recordedEfforts.filter { it.valid && (!nonstopOnly || it.reachedWithoutPriorStop) }
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column { Text(section.name, fontWeight = FontWeight.Bold); Text("${section.startMeters.toInt()}–${section.endMeters.toInt()} m", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Column {
+                    Text(
+                        if (section.kind == com.example.flightlog.domain.SectionKind.WHOLE_TRAIL) "Trail overview" else section.name,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    val kind = when (section.kind) {
+                        com.example.flightlog.domain.SectionKind.TURN -> "Suggested turn"
+                        com.example.flightlog.domain.SectionKind.ROUGH -> "Rough section"
+                        com.example.flightlog.domain.SectionKind.MANUAL -> "Manual section"
+                        com.example.flightlog.domain.SectionKind.WHOLE_TRAIL -> "Complete trail"
+                        com.example.flightlog.domain.SectionKind.SPLIT -> "Timed split"
+                    }
+                    Text("$kind • ${(section.endMeters - section.startMeters).toInt()} m", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Row {
                     TextButton(onClick = onEdit) { Text("Edit") }
                     if (section.state == SectionState.SUGGESTED) TextButton(onClick = { onConfirm(section.id) }) { Text("Confirm") }
@@ -961,9 +1220,41 @@ private fun SectionComparisonCard(
                     val recent = efforts.firstOrNull()
                     val best = efforts.minByOrNull { it.elapsedMillis }
                     val recentMedian = efforts.take(5).map { it.elapsedMillis.toDouble() }.median()
-                    if (recent == null) Text("No valid complete efforts") else {
-                        Text("Latest ${formatDuration(recent.elapsedMillis)} • exit ${formatSpeed(recent.exitSpeedMps, imperial)}")
-                        Text("Personal best ${best?.let { formatDuration(it.elapsedMillis) }} • recent median ${recentMedian?.toLong()?.let(::formatDuration)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (recent == null) {
+                        Text(
+                            if (nonstopOnly && recordedEfforts.any { it.valid }) "No effort has reached this split without an earlier stop yet."
+                            else if (recordedEfforts.isEmpty()) "No run has covered this entire section yet."
+                            else invalidEffortMessage(recordedEfforts),
+                            color = Amber,
+                        )
+                    } else {
+                        Surface(color = TrailCyan.copy(alpha = .10f), shape = RoundedCornerShape(12.dp)) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("LATEST RUN", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Metric("SECTION TIME", formatDuration(recent.elapsedMillis))
+                                    Metric("AVG SPEED", formatSpeed(recent.averageSpeedMps, imperial))
+                                }
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Metric("ENTRY SPEED", formatSpeed(recent.entrySpeedMps, imperial))
+                                    Metric("EXIT SPEED", formatSpeed(recent.exitSpeedMps, imperial))
+                                }
+                                if (section.kind == com.example.flightlog.domain.SectionKind.TURN) {
+                                    Text("Slowest point in turn: ${formatSpeed(recent.minimumSpeedMps, imperial)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (section.kind == com.example.flightlog.domain.SectionKind.SPLIT) {
+                                    Text(
+                                        "Minimum ${formatSpeed(recent.minimumSpeedMps, imperial)} • maximum ${formatSpeed(recent.maximumSpeedMps, imperial)}",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                        val bestDelta = best?.let { recent.elapsedMillis - it.elapsedMillis } ?: 0L
+                        Text(
+                            "Personal best ${best?.let { formatDuration(it.elapsedMillis) }} • latest ${if (bestDelta >= 0) "+" else "−"}${formatDuration(kotlin.math.abs(bestDelta))} • recent median ${recentMedian?.toLong()?.let(::formatDuration)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         val now = System.currentTimeMillis()
                         val windows = listOf("Week" to 7L, "Month" to 30L, "Year" to 365L)
                         Text(windows.joinToString(" • ") { (label, days) ->
@@ -976,8 +1267,8 @@ private fun SectionComparisonCard(
                     val a = efforts.firstOrNull { it.passId == passAId }
                     val b = efforts.firstOrNull { it.passId == passBId }
                     if (a == null || b == null) Text("Select two complete, uninterrupted passes") else {
-                        Text("A ${formatDuration(a.elapsedMillis)} / ${formatSpeed(a.exitSpeedMps, imperial)} exit")
-                        Text("B ${formatDuration(b.elapsedMillis)} / ${formatSpeed(b.exitSpeedMps, imperial)} exit")
+                        Text("A • ${formatDuration(a.elapsedMillis)} • ${formatSpeed(a.averageSpeedMps, imperial)} average • ${formatSpeed(a.exitSpeedMps, imperial)} exit", color = TrailCyan)
+                        Text("B • ${formatDuration(b.elapsedMillis)} • ${formatSpeed(b.averageSpeedMps, imperial)} average • ${formatSpeed(b.exitSpeedMps, imperial)} exit", color = Amber)
                         val faster = if (a.elapsedMillis <= b.elapsedMillis) "A" else "B"
                         val line = if (RideMathLineDifference(a, b)) "$faster is faster and the traces are spatially distinct" else "$faster is faster; GPS cannot confirm a different line"
                         Text(line, color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
@@ -985,7 +1276,10 @@ private fun SectionComparisonCard(
                 }
                 ComparisonMode.VIRTUAL_BEST -> {
                     val best = efforts.minByOrNull { it.elapsedMillis }
-                    if (best == null) Text("No valid complete efforts") else Text("Best section ${formatDuration(best.elapsedMillis)} • exit ${formatSpeed(best.exitSpeedMps, imperial)}")
+                    if (best == null) Text("No complete run is available for this section.") else {
+                        Text("Best section ${formatDuration(best.elapsedMillis)}")
+                        Text("${formatSpeed(best.averageSpeedMps, imperial)} average • ${formatSpeed(best.exitSpeedMps, imperial)} exit", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
             efforts.firstOrNull()?.roughnessScore?.let { score ->
@@ -993,6 +1287,19 @@ private fun SectionComparisonCard(
                 Text("$label ${String.format(Locale.US, "%.2f", score)} • ${efforts.first().sampleQuality}% signal quality", style = MaterialTheme.typography.labelMedium)
             }
         }
+    }
+}
+
+internal fun invalidEffortMessage(efforts: List<SectionEffortEntity>): String {
+    val reasons = efforts.mapNotNullTo(hashSetOf()) { it.invalidReason }
+    return when {
+        reasons == setOf(EffortInvalidReason.STOP) ->
+            "A stop occurred inside this section, so that pass was excluded."
+        reasons == setOf(EffortInvalidReason.GPS_GAP) ->
+            "GPS samples were missing inside this section, so no reliable speed is available."
+        EffortInvalidReason.STOP in reasons && EffortInvalidReason.GPS_GAP in reasons ->
+            "Some passes stopped here and others lost GPS, so no reliable comparison is available."
+        else -> "No uninterrupted pass is available for this section yet."
     }
 }
 
