@@ -28,6 +28,7 @@ import com.example.flightlog.maps.MapTileCache
 import com.example.flightlog.tracking.RecordingSettingsStore
 import com.example.flightlog.tracking.TrackingState
 import com.example.flightlog.tracking.TrailAnalysis
+import com.example.flightlog.tracking.MotionTelemetry
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -92,8 +93,8 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     val selectedJumpMotion = combine(selectedJumpId, selectedRideJumps) { jumpId, rideJumps ->
         rideJumps.firstOrNull { it.id == jumpId }
     }.flatMapLatest { jump ->
-        if (jump == null) flowOf(emptyList()) else repository.jumpMotion(jump)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        if (jump == null) flowOf(MotionTelemetry.EMPTY) else repository.jumpMotion(jump)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MotionTelemetry.EMPTY)
 
     val selectedRideStops = selectedRideId.flatMapLatest { id ->
         if (id == null) flowOf(emptyList()) else repository.stops(id)

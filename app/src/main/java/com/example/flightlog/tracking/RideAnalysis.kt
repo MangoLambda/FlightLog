@@ -467,8 +467,8 @@ class RideProcessor(private val database: FlightLogDatabase) {
 
     suspend fun materializeMissingJumpTraces() {
         dao.jumpsMissingMotionTrace().forEach { jump ->
-            val samples = JumpMotionTrace.loadRaw(dao, jump)
-            if (samples.isNotEmpty()) dao.insertJumpMotionTrace(JumpMotionTrace.encode(jump.id, samples))
+            val telemetry = JumpMotionTrace.loadRaw(dao, jump)
+            if (telemetry.sampleCount > 0) dao.insertJumpMotionTrace(JumpMotionTrace.encode(jump.id, telemetry))
         }
     }
 
@@ -493,7 +493,22 @@ class RideProcessor(private val database: FlightLogDatabase) {
             return
         }
         val motionChunks = dao.telemetryChunks(rideId).filter { it.kind == TelemetryKind.MOTION }
-        val motion = motionChunks.flatMap { TelemetryCodec.decodeMotion(it.payload, it.checksum) }
+        val motionTelemetry = MotionTelemetry.merge(motionChunks.map { TelemetryCodec.decodeMotion(it.payload, it.checksum) })
+        val motion = motionTelemetry.accelerationFrames()
+        val analyzedJumps = if (
+            motionTelemetry.sampleCount > 0 &&
+            motionTelemetry.encodingVersion >= TelemetryCodec.MOTION_ENCODING_VERSION
+        ) {
+            dao.jumps(rideId).map { jump ->
+                val analysis = JumpSensorAnalyzer.analyze(jump, JumpMotionTrace.samples(jump, motionTelemetry), ride.mountingMode)
+                jump.copy(
+                    estimatedHeightMeters = analysis.fusedHeightMeters,
+                    confidence = analysis.estimatedConfidence,
+                )
+            }
+        } else {
+            emptyList()
+        }
         val previousProfiles = dao.spatialProfiles(rideId)
         val profiles = TrailAnalysis.preservePermanentSignals(
             rebuilt = TrailAnalysis.spatialProfiles(rideId, points, motion, ride.mountingMode),
@@ -509,6 +524,7 @@ class RideProcessor(private val database: FlightLogDatabase) {
             }
             dao.deleteStopEventsForRide(rideId)
             if (stopEvents.isNotEmpty()) dao.insertStopEvents(stopEvents)
+            analyzedJumps.forEach { dao.updateJump(it) }
             dao.insertSpatialProfiles(profiles)
             dao.updateRide(ride.copy(archivedAt = System.currentTimeMillis(), analysisVersion = TrailAnalysis.ANALYSIS_VERSION))
             dao.deleteTrackPoints(rideId)
@@ -802,6 +818,6 @@ fun EncodedTelemetry.toEntity(
     expiresAt: Long?,
 ): TelemetryChunkEntity = TelemetryChunkEntity(
     uuid = UUID.randomUUID().toString(), rideId = rideId, kind = kind,
-    startedAt = startedAt, endedAt = endedAt, encodingVersion = TelemetryCodec.ENCODING_VERSION,
+    startedAt = startedAt, endedAt = endedAt, encodingVersion = encodingVersion,
     sampleCount = sampleCount, payload = payload, checksum = checksum, expiresAt = expiresAt,
 )

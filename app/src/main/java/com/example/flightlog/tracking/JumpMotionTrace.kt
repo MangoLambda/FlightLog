@@ -11,34 +11,36 @@ object JumpMotionTrace {
     fun window(jump: JumpEventEntity): LongRange =
         (jump.takeoffAt - PRE_TAKEOFF_MILLIS)..(jump.landingAt + POST_LANDING_MILLIS)
 
-    fun samples(jump: JumpEventEntity, samples: List<MotionSample>): List<MotionSample> {
+    fun samples(jump: JumpEventEntity, telemetry: MotionTelemetry): MotionTelemetry {
         val window = window(jump)
-        return samples.asSequence()
-            .filter { it.timestampMillis in window }
-            .sortedBy { it.timestampMillis }
-            .toList()
+        return telemetry.copy(
+            accelerometer = telemetry.accelerometer.filter { it.timestampMillis in window }.sortedBy { it.timestampMillis },
+            gyroscope = telemetry.gyroscope.filter { it.timestampMillis in window }.sortedBy { it.timestampMillis },
+            orientation = telemetry.orientation.filter { it.timestampMillis in window }.sortedBy { it.timestampMillis },
+            pressure = telemetry.pressure.filter { it.timestampMillis in window }.sortedBy { it.timestampMillis },
+        )
     }
 
-    fun decode(trace: JumpMotionTraceEntity): List<MotionSample> =
+    fun decode(trace: JumpMotionTraceEntity): MotionTelemetry =
         TelemetryCodec.decodeMotion(trace.payload, trace.checksum)
 
-    fun encode(jumpId: Long, samples: List<MotionSample>): JumpMotionTraceEntity {
-        val encoded = TelemetryCodec.encodeMotion(samples)
+    fun encode(jumpId: Long, telemetry: MotionTelemetry): JumpMotionTraceEntity {
+        val encoded = TelemetryCodec.encodeMotion(telemetry)
         return JumpMotionTraceEntity(
             jumpId = jumpId,
             startedAt = encoded.startedAt,
             endedAt = encoded.endedAt,
-            encodingVersion = TelemetryCodec.ENCODING_VERSION,
+            encodingVersion = encoded.encodingVersion,
             sampleCount = encoded.sampleCount,
             payload = encoded.payload,
             checksum = encoded.checksum,
         )
     }
 
-    suspend fun loadRaw(dao: FlightLogDao, jump: JumpEventEntity): List<MotionSample> {
+    suspend fun loadRaw(dao: FlightLogDao, jump: JumpEventEntity): MotionTelemetry {
         val window = window(jump)
         val decoded = dao.motionChunksInWindow(jump.rideId, window.first, window.last)
-            .flatMap { TelemetryCodec.decodeMotion(it.payload, it.checksum) }
-        return samples(jump, decoded)
+            .map { TelemetryCodec.decodeMotion(it.payload, it.checksum) }
+        return samples(jump, MotionTelemetry.merge(decoded))
     }
 }

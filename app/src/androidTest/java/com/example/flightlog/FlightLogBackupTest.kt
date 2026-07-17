@@ -24,7 +24,8 @@ import com.example.flightlog.domain.SectionState
 import com.example.flightlog.domain.SensorQuality
 import com.example.flightlog.export.FlightLogBackup
 import com.example.flightlog.tracking.JumpMotionTrace
-import com.example.flightlog.tracking.MotionSample
+import com.example.flightlog.tracking.MotionTelemetry
+import com.example.flightlog.tracking.Vector3Sample
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.runBlocking
@@ -49,9 +50,11 @@ class FlightLogBackupTest {
             estimatedFlightSeconds = .3, estimatedHeightMeters = .1, estimatedDistanceMeters = 1.5,
             confidence = 80, sensorQuality = SensorQuality.FULL,
         ))
-        source.dao().insertJumpMotionTrace(JumpMotionTrace.encode(jumpId, listOf(
-            MotionSample(1_100, 0f, 0f, 9.8f, 0f, 0f, 0f),
-            MotionSample(1_500, 0f, 0f, 18f, 0f, 0f, 0f),
+        source.dao().insertJumpMotionTrace(JumpMotionTrace.encode(jumpId, MotionTelemetry(
+            accelerometer = listOf(
+                Vector3Sample(1_100, 0f, 0f, 9.8f),
+                Vector3Sample(1_500, 0f, 0f, 18f),
+            ),
         )))
         source.dao().insertSpatialProfiles(listOf(SpatialProfileEntity(
             rideId = rideId,

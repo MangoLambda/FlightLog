@@ -63,10 +63,10 @@ class RideTrackingService : Service(), SensorEventListener {
     private lateinit var recordingSettings: RecordingSettings
     private var gpsStatus = GpsStatus.ACQUIRING
     private var gpsMessage: String? = null
-    private val motionBuffer = ArrayList<MotionSample>(512)
+    private val motionBuffer = MotionTelemetryBuffer()
     private var lastMotionJob: Job? = null
     private var lastLocationJob: Job? = null
-    private val latestGyroscope = FloatArray(3)
+    private var orientationSource = OrientationSource.NONE
     private var lastStationaryStoredAt = 0L
 
     private val locationCallback = object : LocationCallback() {
@@ -198,9 +198,20 @@ class RideTrackingService : Service(), SensorEventListener {
     private fun registerSensors() {
         val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-        accelerometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        gyroscope?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        sensorsRegistered = accelerometer != null || gyroscope != null
+        val gameRotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+        val rotation = gameRotation ?: sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        val pressure = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
+        orientationSource = when (rotation?.type) {
+            Sensor.TYPE_GAME_ROTATION_VECTOR -> OrientationSource.GAME_ROTATION_VECTOR
+            Sensor.TYPE_ROTATION_VECTOR -> OrientationSource.ROTATION_VECTOR
+            else -> OrientationSource.NONE
+        }
+        val registered = listOfNotNull(accelerometer, gyroscope, rotation).map {
+            sensorManager.registerListener(this, it, SensorSamplingProfile.MOTION_PERIOD_US)
+        } + listOfNotNull(pressure).map {
+            sensorManager.registerListener(this, it, SensorSamplingProfile.PRESSURE_PERIOD_US)
+        }
+        sensorsRegistered = registered.any { it }
     }
 
     private fun configureDetector() {
@@ -219,32 +230,51 @@ class RideTrackingService : Service(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
+        val timestampMillis = sensorTimestampMillis(event.timestamp)
+        val recording = ride?.state == RideState.RECORDING
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
                 detector?.onAcceleration(event.timestamp, event.values[0], event.values[1], event.values[2])
-                val current = ride
-                if (current?.state == RideState.RECORDING) {
-                    val nowNanos = SystemClock.elapsedRealtimeNanos()
-                    val timestampMillis = System.currentTimeMillis() - (nowNanos - event.timestamp) / 1_000_000L
-                    synchronized(motionBuffer) {
-                        motionBuffer += MotionSample(
-                            timestampMillis, event.values[0], event.values[1], event.values[2],
-                            latestGyroscope[0], latestGyroscope[1], latestGyroscope[2],
-                        )
-                    }
-                    if (motionBuffer.size >= 500) flushMotion()
+                if (recording && motionBuffer.addAcceleration(Vector3Sample(
+                        timestampMillis, event.values[0], event.values[1], event.values[2],
+                    )) >= MOTION_BUFFER_EVENT_LIMIT
+                ) {
+                    flushMotion()
                 }
             }
             Sensor.TYPE_GYROSCOPE -> {
-                latestGyroscope[0] = event.values[0]
-                latestGyroscope[1] = event.values[1]
-                latestGyroscope[2] = event.values[2]
                 detector?.onGyroscope(event.values[0], event.values[1], event.values[2])
+                if (recording && motionBuffer.addGyroscope(Vector3Sample(
+                        timestampMillis, event.values[0], event.values[1], event.values[2],
+                    )) >= MOTION_BUFFER_EVENT_LIMIT
+                ) {
+                    flushMotion()
+                }
+            }
+            Sensor.TYPE_GAME_ROTATION_VECTOR, Sensor.TYPE_ROTATION_VECTOR -> if (recording) {
+                val quaternion = FloatArray(4)
+                SensorManager.getQuaternionFromVector(quaternion, event.values)
+                if (motionBuffer.addOrientation(RotationSample(
+                        timestampMillis, quaternion[1], quaternion[2], quaternion[3], quaternion[0],
+                    )) >= MOTION_BUFFER_EVENT_LIMIT
+                ) {
+                    flushMotion()
+                }
+            }
+            Sensor.TYPE_PRESSURE -> if (recording && event.values.isNotEmpty()) {
+                if (motionBuffer.addPressure(PressureSample(timestampMillis, event.values[0])) >= MOTION_BUFFER_EVENT_LIMIT) {
+                    flushMotion()
+                }
             }
         }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    private fun sensorTimestampMillis(timestampNanos: Long): Long {
+        val nowNanos = SystemClock.elapsedRealtimeNanos()
+        return System.currentTimeMillis() - (nowNanos - timestampNanos) / 1_000_000L
+    }
 
     private fun acceptLocation(location: Location) {
         val currentRide = ride ?: return
@@ -335,14 +365,12 @@ class RideTrackingService : Service(), SensorEventListener {
 
     private fun flushMotion(): Job? {
         val currentRide = ride ?: return null
-        val samples = synchronized(motionBuffer) {
-            if (motionBuffer.isEmpty()) return null
-            motionBuffer.toList().also { motionBuffer.clear() }
-        }
+        val telemetry = motionBuffer.drain(orientationSource)
+        if (telemetry.sampleCount == 0) return null
         val previousWrite = lastMotionJob
         return scope.launch {
             previousWrite?.join()
-            val encoded = TelemetryCodec.encodeMotion(samples)
+            val encoded = TelemetryCodec.encodeMotion(telemetry)
             dao.insertTelemetryChunk(encoded.toEntity(
                 rideId = currentRide.id,
                 kind = com.example.flightlog.domain.TelemetryKind.MOTION,
@@ -440,6 +468,7 @@ class RideTrackingService : Service(), SensorEventListener {
         const val ACTION_STOP = "com.example.flightlog.STOP_RIDE"
         private const val CHANNEL_ID = "ride_recording"
         private const val NOTIFICATION_ID = 42
+        private const val MOTION_BUFFER_EVENT_LIMIT = 3_250
         private const val MOTION_RETENTION_MILLIS = 90L * 24 * 60 * 60 * 1_000
     }
 }

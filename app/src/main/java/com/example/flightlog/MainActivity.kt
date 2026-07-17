@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -79,7 +80,14 @@ import com.example.flightlog.maps.MapTileCache
 import com.example.flightlog.maps.TileCacheState
 import com.example.flightlog.maps.TileCacheStatus
 import com.example.flightlog.tracking.LiveRideState
-import com.example.flightlog.tracking.MotionSample
+import com.example.flightlog.tracking.MotionTelemetry
+import com.example.flightlog.tracking.JumpEstimateMethod
+import com.example.flightlog.tracking.JumpSensorAnalysis
+import com.example.flightlog.tracking.JumpSensorAnalyzer
+import com.example.flightlog.tracking.OrientationSource
+import com.example.flightlog.tracking.PressureQuality
+import com.example.flightlog.tracking.SensorRateSummary
+import com.example.flightlog.tracking.TimedValue
 import com.example.flightlog.tracking.GpsStatus
 import com.example.flightlog.tracking.RideMath
 import com.example.flightlog.tracking.RideTrackingService
@@ -387,6 +395,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         jumpNumber = jumpNumbers(selectedJumps)[selectedJumpId],
                         points = points,
                         motion = selectedJumpMotion,
+                        mountingMode = rides.firstOrNull { it.id == selectedRideId }?.mountingMode,
                         mapApiKey = effectiveMapApiKey,
                         mapStyle = mapStyle,
                         imperial = imperial,
@@ -1087,7 +1096,8 @@ private fun JumpDetailScreen(
     jump: JumpEventEntity?,
     jumpNumber: Int?,
     points: List<TrackPointEntity>,
-    motion: List<MotionSample>,
+    motion: MotionTelemetry,
+    mountingMode: MountingMode?,
     mapApiKey: String,
     mapStyle: MapStyle,
     imperial: Boolean,
@@ -1108,7 +1118,8 @@ private fun JumpDetailScreen(
             points.sortedBy { abs(it.recordedAt - jump.takeoffAt) }.take(20).sortedBy { it.recordedAt }
         }
     }
-    val acceleration = remember(jump.id, motion) { accelerationTrace(jump, motion) }
+    val acceleration = remember(jump.id, motion) { accelerationTrace(jump, motion.accelerationFrames()) }
+    val sensorAnalysis = remember(jump, motion, mountingMode) { JumpSensorAnalyzer.analyze(jump, motion, mountingMode) }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text("Jump ${jumpNumber ?: ""}".trim()) },
@@ -1143,7 +1154,18 @@ private fun JumpDetailScreen(
                 }
             }
             item { FlightArcChart(displayedFlight, displayedHeight, displayedDistance, imperial) }
-            item { AccelerationTraceChart(acceleration, jump.landingAt - jump.takeoffAt) }
+            item { SensorEvidenceCard(sensorAnalysis, imperial) }
+            item {
+                AccelerationTraceChart(
+                    trace = acceleration,
+                    verticalTrace = sensorAnalysis.worldVerticalAcceleration,
+                    takeoffAt = jump.takeoffAt,
+                    flightMillis = jump.landingAt - jump.takeoffAt,
+                )
+            }
+            if (sensorAnalysis.relativePressureHeight.size >= 2) item {
+                PressureHeightTraceCard(sensorAnalysis, jump.takeoffAt, jump.landingAt, imperial)
+            }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Correct the estimate", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -1213,7 +1235,12 @@ private fun FlightArcChart(flight: Double, height: Double, distance: Double, imp
 }
 
 @Composable
-private fun AccelerationTraceChart(trace: List<com.example.flightlog.ui.AccelerationPoint>, flightMillis: Long) {
+private fun AccelerationTraceChart(
+    trace: List<com.example.flightlog.ui.AccelerationPoint>,
+    verticalTrace: List<TimedValue>,
+    takeoffAt: Long,
+    flightMillis: Long,
+) {
     val lineColor = Amber
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val flightColor = TrailCyan.copy(alpha = .14f)
@@ -1227,35 +1254,47 @@ private fun AccelerationTraceChart(trace: List<com.example.flightlog.ui.Accelera
                     modifier = Modifier.semantics { contentDescription = "Measured sensor trace unavailable" },
                 )
             } else {
-                val maximumG = trace.maxOf { it.magnitudeG }.coerceAtLeast(2.0)
+                val verticalG = verticalTrace.map { TimedValue(it.timestampMillis - takeoffAt, it.value / 9.80665) }
+                val minimumG = minOf(-1.25, verticalG.minOfOrNull { it.value } ?: 0.0)
+                val maximumG = maxOf(trace.maxOf { it.magnitudeG }, verticalG.maxOfOrNull { it.value } ?: 0.0, 2.0)
                 val pump = trace.filter { it.millisFromTakeoff <= 0L }.maxByOrNull { it.magnitudeG }
                 Canvas(
                     Modifier.fillMaxWidth().height(140.dp).semantics {
                         contentDescription = "Measured acceleration from pump through landing; peak ${String.format(Locale.US, "%.1f", maximumG)} g"
                     },
                 ) {
-                    val start = trace.first().millisFromTakeoff
-                    val end = trace.last().millisFromTakeoff.coerceAtLeast(start + 1)
+                    val start = minOf(trace.first().millisFromTakeoff, verticalG.firstOrNull()?.timestampMillis ?: Long.MAX_VALUE)
+                    val end = maxOf(trace.last().millisFromTakeoff, verticalG.lastOrNull()?.timestampMillis ?: Long.MIN_VALUE).coerceAtLeast(start + 1)
                     fun x(milliseconds: Long) = ((milliseconds - start).toFloat() / (end - start)) * size.width
+                    fun y(valueG: Double) = ((maximumG - valueG) / (maximumG - minimumG) * size.height).toFloat()
                     val takeoffX = x(0L).coerceIn(0f, size.width)
                     val landingX = x(flightMillis).coerceIn(0f, size.width)
                     drawRect(flightColor, topLeft = Offset(takeoffX, 0f), size = androidx.compose.ui.geometry.Size((landingX - takeoffX).coerceAtLeast(0f), size.height))
-                    val oneG = size.height - (1.0 / maximumG * size.height).toFloat()
-                    drawLine(gridColor, Offset(0f, oneG), Offset(size.width, oneG), strokeWidth = 2f)
+                    drawLine(gridColor, Offset(0f, y(1.0)), Offset(size.width, y(1.0)), strokeWidth = 2f)
+                    if (verticalG.isNotEmpty()) drawLine(gridColor, Offset(0f, y(0.0)), Offset(size.width, y(0.0)), strokeWidth = 2f)
                     val path = Path()
                     trace.forEachIndexed { index, point ->
                         val px = x(point.millisFromTakeoff)
-                        val py = size.height - (point.magnitudeG / maximumG * size.height).toFloat()
+                        val py = y(point.magnitudeG)
                         if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
                     }
                     drawPath(path, lineColor, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                    if (verticalG.size >= 2) {
+                        val verticalPath = Path()
+                        verticalG.forEachIndexed { index, point ->
+                            val px = x(point.timestampMillis)
+                            val py = y(point.value)
+                            if (index == 0) verticalPath.moveTo(px, py) else verticalPath.lineTo(px, py)
+                        }
+                        drawPath(verticalPath, TrailCyan, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                    }
                     pump?.let { point ->
                         drawCircle(
                             Lime,
                             radius = 5.dp.toPx(),
                             center = Offset(
                                 x(point.millisFromTakeoff),
-                                size.height - (point.magnitudeG / maximumG * size.height).toFloat(),
+                                y(point.magnitudeG),
                             ),
                         )
                     }
@@ -1267,9 +1306,113 @@ private fun AccelerationTraceChart(trace: List<com.example.flightlog.ui.Accelera
                     Text("Takeoff", style = MaterialTheme.typography.labelMedium)
                     Text("Landing", style = MaterialTheme.typography.labelMedium)
                 }
+                if (verticalG.isNotEmpty()) {
+                    Text("Amber: total force • cyan: orientation-corrected vertical", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }
+}
+
+@Composable
+internal fun SensorEvidenceCard(analysis: JumpSensorAnalysis, imperial: Boolean) {
+    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Sensor evidence", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            SensorRateRow("Accelerometer", analysis.accelerometerRate)
+            SensorRateRow("Gyroscope", analysis.gyroscopeRate)
+            SensorRateRow("Orientation", analysis.orientationRate)
+            SensorRateRow("Barometer", analysis.pressureRate)
+            HorizontalDivider()
+            val orientationName = when (analysis.orientationSource) {
+                OrientationSource.GAME_ROTATION_VECTOR -> "Game rotation vector"
+                OrientationSource.ROTATION_VECTOR -> "Rotation vector fallback"
+                OrientationSource.NONE -> "Unavailable"
+            }
+            Text(
+                "$orientationName • ${(analysis.orientationCoverage * 100).roundToInt()}% acceleration coverage" +
+                    (analysis.maximumRotationDegrees?.let { " • ${it.roundToInt()}° max rotation" } ?: ""),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val method = if (analysis.estimateMethod == JumpEstimateMethod.AIRTIME_BAROMETER) "Airtime + barometer" else "Airtime"
+            Text("Height method: $method", fontWeight = FontWeight.Bold)
+            Text(
+                buildString {
+                    append("Airtime ${formatHeight(analysis.airtimeHeightMeters, imperial)}")
+                    analysis.barometricHeightMeters?.let { append(" • pressure ${formatHeight(it, imperial)}") }
+                    if (analysis.estimateMethod == JumpEstimateMethod.AIRTIME_BAROMETER) {
+                        append(" • fused ${formatHeight(analysis.fusedHeightMeters, imperial)}")
+                    }
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "Pressure: ${pressureQualityLabel(analysis.pressureQuality)}",
+                color = if (analysis.pressureQuality == PressureQuality.ACCEPTED) Lime else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SensorRateRow(label: String, rate: SensorRateSummary) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(.4f))
+        Text(
+            rate.deliveredHz?.let { String.format(Locale.US, "%.1f Hz / %d requested", it, rate.requestedHz) }
+                ?: "Unavailable / ${rate.requestedHz} requested",
+            modifier = Modifier.weight(.6f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.End,
+        )
+    }
+}
+
+@Composable
+private fun PressureHeightTraceCard(analysis: JumpSensorAnalysis, takeoffAt: Long, landingAt: Long, imperial: Boolean) {
+    val trace = analysis.relativePressureHeight
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Measured relative pressure height", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                analysis.barometricHeightMeters?.let { "Detected peak ${formatHeight(it, imperial)} • ${pressureQualityLabel(analysis.pressureQuality)}" }
+                    ?: pressureQualityLabel(analysis.pressureQuality),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Canvas(Modifier.fillMaxWidth().height(120.dp)) {
+                val start = trace.first().timestampMillis
+                val end = trace.last().timestampMillis.coerceAtLeast(start + 1)
+                val minimum = trace.minOf { it.value }.coerceAtMost(0.0)
+                val maximum = trace.maxOf { it.value }.coerceAtLeast(minimum + 0.1)
+                fun x(timestamp: Long) = ((timestamp - start).toFloat() / (end - start)) * size.width
+                fun y(height: Double) = ((maximum - height) / (maximum - minimum) * size.height).toFloat()
+                val takeoffX = x(takeoffAt).coerceIn(0f, size.width)
+                val landingX = x(landingAt).coerceIn(0f, size.width)
+                drawRect(TrailCyan.copy(alpha = .14f), topLeft = Offset(takeoffX, 0f), size = androidx.compose.ui.geometry.Size((landingX - takeoffX).coerceAtLeast(0f), size.height))
+                val path = Path()
+                trace.forEachIndexed { index, point ->
+                    if (index == 0) path.moveTo(x(point.timestampMillis), y(point.value))
+                    else path.lineTo(x(point.timestampMillis), y(point.value))
+                }
+                drawPath(path, TrailCyan, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                drawLine(gridColor, Offset(0f, size.height), Offset(size.width, size.height), strokeWidth = 2f)
+            }
+        }
+    }
+}
+
+internal fun pressureQualityLabel(quality: PressureQuality): String = when (quality) {
+    PressureQuality.UNAVAILABLE -> "unavailable"
+    PressureQuality.RATE_TOO_LOW -> "delivered rate too low"
+    PressureQuality.INSUFFICIENT_SAMPLES -> "not enough samples"
+    PressureQuality.NOISY_BASELINE -> "baseline too noisy"
+    PressureQuality.BASELINE_SHIFT -> "pressure shifted after landing"
+    PressureQuality.INVALID_APEX_TIMING -> "pressure peak did not align with the jump"
+    PressureQuality.OUT_OF_RANGE -> "height change was outside the reliable range"
+    PressureQuality.DISAGREES -> "clean signal disagreed with airtime"
+    PressureQuality.ACCEPTED -> "accepted for conservative fusion"
 }
 
 @Composable

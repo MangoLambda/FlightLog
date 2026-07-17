@@ -15,6 +15,7 @@ import java.util.zip.ZipOutputStream
 import org.json.JSONObject
 
 data class BackupImportResult(val ridesAdded: Int, val duplicateRides: Int)
+private data class TelemetryMetadata(val version: Int, val sampleCount: Int, val startedAt: Long, val endedAt: Long)
 
 class FlightLogBackup(
     private val context: Context,
@@ -164,12 +165,12 @@ class FlightLogBackup(
             val jump = dao.jumpByTakeoff(rideId, takeoffAt) ?: error("Jump trace references unknown jump")
             val payload = File(directory, jumpTracePath(rideUuid, takeoffAt)).readBytes()
             val checksum = json.getString("checksum")
-            val samples = TelemetryCodec.decodeMotion(payload, checksum)
+            val telemetry = TelemetryCodec.decodeMotion(payload, checksum)
             val startedAt = json.getLong("startedAt")
             val endedAt = json.getLong("endedAt")
             val sampleCount = json.getInt("sampleCount")
-            require(sampleCount in 1..MAX_JUMP_TRACE_SAMPLES && samples.size == sampleCount)
-            require(startedAt == samples.first().timestampMillis && endedAt == samples.last().timestampMillis)
+            require(sampleCount in 1..MAX_JUMP_TRACE_SAMPLES && telemetry.sampleCount == sampleCount)
+            require(startedAt == telemetry.startedAt && endedAt == telemetry.endedAt)
             val window = com.example.flightlog.tracking.JumpMotionTrace.window(jump)
             require(startedAt >= window.first && endedAt <= window.last)
             dao.insertJumpMotionTrace(JumpMotionTraceEntity(
@@ -177,7 +178,7 @@ class FlightLogBackup(
                 startedAt = startedAt,
                 endedAt = endedAt,
                 encodingVersion = json.getInt("encodingVersion").also {
-                    require(it == TelemetryCodec.ENCODING_VERSION)
+                    require(it == telemetry.encodingVersion)
                 },
                 sampleCount = sampleCount,
                 payload = payload,
@@ -191,12 +192,34 @@ class FlightLogBackup(
             val checksum = json.getString("checksum")
             require(TelemetryCodec.checksum(payload) == checksum) { "Telemetry checksum mismatch" }
             val kind = TelemetryKind.valueOf(json.getString("kind"))
-            if (kind == TelemetryKind.GPS) TelemetryCodec.decodeGps(rideId, payload, checksum)
-            else TelemetryCodec.decodeMotion(payload, checksum)
+            val decoded = if (kind == TelemetryKind.GPS) {
+                val points = TelemetryCodec.decodeGps(rideId, payload, checksum)
+                TelemetryMetadata(
+                    TelemetryCodec.GPS_ENCODING_VERSION,
+                    points.size,
+                    points.first().recordedAt,
+                    points.last().recordedAt,
+                )
+            } else {
+                val telemetry = TelemetryCodec.decodeMotion(payload, checksum)
+                TelemetryMetadata(
+                    telemetry.encodingVersion,
+                    telemetry.sampleCount,
+                    telemetry.startedAt ?: error("Motion telemetry is empty"),
+                    telemetry.endedAt ?: error("Motion telemetry is empty"),
+                )
+            }
+            val startedAt = json.getLong("startedAt")
+            val endedAt = json.getLong("endedAt")
+            val sampleCount = json.getInt("sampleCount")
+            require(startedAt == decoded.startedAt && endedAt == decoded.endedAt && sampleCount == decoded.sampleCount) {
+                "Telemetry metadata does not match its payload"
+            }
             dao.insertTelemetryChunk(TelemetryChunkEntity(
                 uuid = uuid, rideId = rideId, kind = kind,
-                startedAt = json.getLong("startedAt"), endedAt = json.getLong("endedAt"),
-                encodingVersion = json.getInt("encodingVersion"), sampleCount = json.getInt("sampleCount"),
+                startedAt = startedAt, endedAt = endedAt,
+                encodingVersion = json.getInt("encodingVersion").also { require(it == decoded.version) },
+                sampleCount = sampleCount,
                 payload = payload, checksum = checksum, expiresAt = json.nullableLong("expiresAt"),
             ))
         }
@@ -379,7 +402,7 @@ class FlightLogBackup(
 
     companion object {
         const val MIME_TYPE = "application/zip"
-        private const val FORMAT_VERSION = 3
+        private const val FORMAT_VERSION = 4
         private const val MAX_JUMP_TRACE_SAMPLES = 10_000
         private const val MAX_ENTRY_BYTES = 512L * 1024 * 1024
         private const val MAX_TOTAL_BYTES = 2L * 1024 * 1024 * 1024
