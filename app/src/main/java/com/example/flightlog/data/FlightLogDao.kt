@@ -228,6 +228,62 @@ interface FlightLogDao {
     fun observeNextMotionExpiry(): Flow<Long?>
 
     @Query("""SELECT
+        rides.id AS rideId,
+        COALESCE(trackPointTotals.rowCount, 0) AS trackPointCount,
+        COALESCE(telemetryTotals.rowCount, 0) AS telemetryChunkCount,
+        COALESCE(telemetryTotals.payloadBytes, 0) AS telemetryPayloadBytes,
+        COALESCE(jumpTotals.rowCount, 0) AS jumpCount,
+        COALESCE(jumpTraceTotals.rowCount, 0) AS jumpTraceCount,
+        COALESCE(jumpTraceTotals.payloadBytes, 0) AS jumpTracePayloadBytes,
+        COALESCE(profileTotals.rowCount, 0) AS spatialProfileCount,
+        COALESCE(stopTotals.rowCount, 0) AS stopEventCount,
+        COALESCE(passTotals.rowCount, 0) AS trailPassCount,
+        COALESCE(effortTotals.rowCount, 0) AS sectionEffortCount,
+        COALESCE(observationTotals.rowCount, 0) AS trailStopObservationCount
+    FROM rides
+    LEFT JOIN (
+        SELECT rideId, COUNT(*) AS rowCount FROM track_points GROUP BY rideId
+    ) AS trackPointTotals ON trackPointTotals.rideId = rides.id
+    LEFT JOIN (
+        SELECT rideId, COUNT(*) AS rowCount, COALESCE(SUM(LENGTH(payload)), 0) AS payloadBytes
+        FROM telemetry_chunks GROUP BY rideId
+    ) AS telemetryTotals ON telemetryTotals.rideId = rides.id
+    LEFT JOIN (
+        SELECT rideId, COUNT(*) AS rowCount FROM jump_events GROUP BY rideId
+    ) AS jumpTotals ON jumpTotals.rideId = rides.id
+    LEFT JOIN (
+        SELECT jump_events.rideId AS rideId, COUNT(*) AS rowCount,
+            COALESCE(SUM(LENGTH(jump_motion_traces.payload)), 0) AS payloadBytes
+        FROM jump_motion_traces
+        INNER JOIN jump_events ON jump_events.id = jump_motion_traces.jumpId
+        GROUP BY jump_events.rideId
+    ) AS jumpTraceTotals ON jumpTraceTotals.rideId = rides.id
+    LEFT JOIN (
+        SELECT rideId, COUNT(*) AS rowCount FROM spatial_profiles GROUP BY rideId
+    ) AS profileTotals ON profileTotals.rideId = rides.id
+    LEFT JOIN (
+        SELECT rideId, COUNT(*) AS rowCount FROM stop_events GROUP BY rideId
+    ) AS stopTotals ON stopTotals.rideId = rides.id
+    LEFT JOIN (
+        SELECT rideId, COUNT(*) AS rowCount FROM trail_passes GROUP BY rideId
+    ) AS passTotals ON passTotals.rideId = rides.id
+    LEFT JOIN (
+        SELECT trail_passes.rideId AS rideId, COUNT(*) AS rowCount
+        FROM section_efforts
+        INNER JOIN trail_passes ON trail_passes.id = section_efforts.passId
+        GROUP BY trail_passes.rideId
+    ) AS effortTotals ON effortTotals.rideId = rides.id
+    LEFT JOIN (
+        SELECT trail_passes.rideId AS rideId, COUNT(*) AS rowCount
+        FROM trail_stop_observations
+        INNER JOIN trail_passes ON trail_passes.id = trail_stop_observations.passId
+        GROUP BY trail_passes.rideId
+    ) AS observationTotals ON observationTotals.rideId = rides.id
+    ORDER BY rides.id
+    """)
+    fun observeRideStorageComponents(): Flow<List<RideStorageComponents>>
+
+    @Query("""SELECT
         (SELECT COUNT(*) * 112 FROM spatial_profiles) +
         (SELECT COUNT(*) * 96 FROM stop_events) +
         (SELECT COUNT(*) * 128 FROM trail_pause_zones) +

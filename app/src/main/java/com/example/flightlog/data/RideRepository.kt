@@ -28,6 +28,9 @@ class RideRepository(private val database: FlightLogDatabase) {
     val motionBytes: Flow<Long> = dao.observeMotionBytes()
     val nextMotionExpiry: Flow<Long?> = dao.observeNextMotionExpiry()
     val estimatedProfileBytes: Flow<Long> = dao.observeEstimatedProfileBytes()
+    val rideStorageBytes: Flow<Map<Long, Long>> = dao.observeRideStorageComponents().map { rides ->
+        rides.associate { it.rideId to RideStorageEstimate.bytes(it) }
+    }
 
     fun trackPoints(rideId: Long) = dao.observeTrackPoints(rideId).map { points ->
         if (points.isNotEmpty()) points else compactedPoints(rideId)

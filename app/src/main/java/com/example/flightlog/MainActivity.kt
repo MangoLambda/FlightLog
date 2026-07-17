@@ -165,6 +165,13 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     var pendingRideStart by remember { mutableStateOf(false) }
     var focusMapProvider by remember { mutableStateOf(false) }
     var showActiveMapSettings by remember { mutableStateOf(false) }
+    val rideStorageBytes = if (
+        screen == AppScreen.HISTORY || screen == AppScreen.SETTINGS || showActiveMapSettings
+    ) {
+        vm.rideStorageBytes.collectAsStateWithLifecycle().value
+    } else {
+        emptyMap()
+    }
     val preferences = remember { context.getSharedPreferences("settings", 0) }
     var showWelcome by remember { mutableStateOf(!preferences.getBoolean("welcomed", false)) }
 
@@ -257,6 +264,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                     telemetryBytes = telemetryBytes,
                     motionBytes = motionBytes,
                     estimatedProfileBytes = estimatedProfileBytes,
+                    savedRideBytes = rideStorageBytes.values.sum(),
                     nextMotionExpiry = nextMotionExpiry,
                     backupState = backupState,
                     onExportBackup = { backupExportLauncher.launch("flightlog-backup.flightlog.zip") },
@@ -318,6 +326,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                     AppScreen.HISTORY -> HistoryScreen(
                         rides = rides,
                         imperial = imperial,
+                        rideStorageBytes = rideStorageBytes,
                         onRide = vm::openRide,
                         onPreviewDelete = vm::previewBulkRideDeletion,
                         onDelete = vm::deleteRides,
@@ -346,6 +355,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         telemetryBytes = telemetryBytes,
                         motionBytes = motionBytes,
                         estimatedProfileBytes = estimatedProfileBytes,
+                        savedRideBytes = rideStorageBytes.values.sum(),
                         nextMotionExpiry = nextMotionExpiry,
                         backupState = backupState,
                         onExportBackup = { backupExportLauncher.launch("flightlog-backup.flightlog.zip") },
@@ -700,6 +710,7 @@ private fun BulkRideDeleteDialog(
 internal fun HistoryScreen(
     rides: List<RideEntity>,
     imperial: Boolean,
+    rideStorageBytes: Map<Long, Long> = emptyMap(),
     onRide: (Long) -> Unit,
     onPreviewDelete: suspend (Set<Long>) -> BulkRideDeletePreview,
     onDelete: suspend (BulkRideDeletePreview) -> BulkRideDeleteResult,
@@ -833,6 +844,11 @@ internal fun HistoryScreen(
                         Column(Modifier.weight(1f)) {
                             Text(formatDate(ride.startedAt), fontWeight = FontWeight.Bold)
                             Text("${formatDistance(ride.distanceMeters, imperial)} • ${formatDuration(ride.movingTimeMillis)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "About ${formatDataSize(rideStorageBytes[ride.id] ?: 0L)} saved",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                         if (ride.state == RideState.INTERRUPTED) AssistChip(onClick = {}, label = { Text("Interrupted") })
                         if (selectionMode) {
@@ -1745,6 +1761,7 @@ private fun SettingsScreen(
     telemetryBytes: Long = 0,
     motionBytes: Long = 0,
     estimatedProfileBytes: Long = 0,
+    savedRideBytes: Long = 0,
     nextMotionExpiry: Long? = null,
     backupState: BackupUiState = BackupUiState.Idle,
     onExportBackup: () -> Unit = {},
@@ -1848,6 +1865,24 @@ private fun SettingsScreen(
             Card {
                 Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Ride data and backups", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Saved ride history", fontWeight = FontWeight.Bold)
+                                Text("Estimated on-device data", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "About ${formatDataSize(savedRideBytes)}",
+                                color = TrailCyan,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
                     val totalMb = telemetryBytes / (1_024.0 * 1_024.0)
                     val motionMb = motionBytes / (1_024.0 * 1_024.0)
                     val profileMb = estimatedProfileBytes / (1_024.0 * 1_024.0)
@@ -2104,6 +2139,19 @@ private fun formatDuration(millis: Long): String {
     val minutes = (seconds % 3_600) / 60
     val remaining = seconds % 60
     return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, remaining) else "%02d:%02d".format(minutes, remaining)
+}
+
+internal fun formatDataSize(bytes: Long): String {
+    val safeBytes = bytes.coerceAtLeast(0)
+    val kibibyte = 1_024.0
+    val mebibyte = kibibyte * 1_024.0
+    val gibibyte = mebibyte * 1_024.0
+    return when {
+        safeBytes < kibibyte -> "$safeBytes B"
+        safeBytes < mebibyte -> String.format(Locale.US, "%.1f KB", safeBytes / kibibyte)
+        safeBytes < gibibyte -> String.format(Locale.US, "%.1f MB", safeBytes / mebibyte)
+        else -> String.format(Locale.US, "%.2f GB", safeBytes / gibibyte)
+    }
 }
 
 private fun formatDate(timestamp: Long): String = DateTimeFormatter.ofPattern("EEE, MMM d • h:mm a")

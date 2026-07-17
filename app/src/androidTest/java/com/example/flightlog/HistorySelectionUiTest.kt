@@ -83,6 +83,23 @@ class HistorySelectionUiTest {
         composeRule.onNodeWithText("1 selected").assertIsDisplayed()
     }
 
+    @Test fun eachRideDisplaysItsSavedDataSize() {
+        composeRule.setContent {
+            FlightLogTheme {
+                HistoryScreen(
+                    rides = listOf(ride(1)),
+                    imperial = false,
+                    rideStorageBytes = mapOf(1L to 2_048L),
+                    onRide = {},
+                    onPreviewDelete = { ids -> BulkRideDeletePreview(ids, emptyList(), emptyList(), emptySet()) },
+                    onDelete = { BulkRideDeleteResult(1, 0, 0) },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("About 2.0 KB saved").assertIsDisplayed()
+    }
+
     private fun ride(id: Long) = RideEntity(
         id = id,
         startedAt = id * 1_000,

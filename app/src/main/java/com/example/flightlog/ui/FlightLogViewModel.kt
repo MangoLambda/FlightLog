@@ -62,6 +62,7 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     val motionBytes = repository.motionBytes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
     val nextMotionExpiry = repository.nextMotionExpiry.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
     val estimatedProfileBytes = repository.estimatedProfileBytes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
+    val rideStorageBytes = repository.rideStorageBytes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyMap())
     val live = TrackingState.state
     val screen = MutableStateFlow(AppScreen.RIDE)
     val selectedRideId = MutableStateFlow<Long?>(null)
