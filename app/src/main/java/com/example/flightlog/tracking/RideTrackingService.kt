@@ -158,9 +158,8 @@ class RideTrackingService : Service(), SensorEventListener {
             val finished = current.copy(endedAt = System.currentTimeMillis(), state = RideState.COMPLETED)
             dao.updateRide(finished)
             ride = finished
-            publishState()
-            (application as FlightLogApplication).rideProcessor.compactAndAnalyze(finished.id)
-            (application as FlightLogApplication).rideProcessor.cleanupExpiredMotion()
+            RideProcessingWorker.enqueue(this@RideTrackingService)
+            TrackingState.clear()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
