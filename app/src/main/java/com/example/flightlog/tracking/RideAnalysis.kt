@@ -426,6 +426,13 @@ private fun List<Double>.median(): Double? = if (isEmpty()) null else sorted().l
 class RideProcessor(private val database: FlightLogDatabase) {
     private val dao = database.dao()
 
+    suspend fun materializeMissingJumpTraces() {
+        dao.jumpsMissingMotionTrace().forEach { jump ->
+            val samples = JumpMotionTrace.loadRaw(dao, jump)
+            if (samples.isNotEmpty()) dao.insertJumpMotionTrace(JumpMotionTrace.encode(jump.id, samples))
+        }
+    }
+
     suspend fun compactAndAnalyze(rideId: Long) {
         val ride = dao.ride(rideId) ?: return
         if (ride.archivedAt != null && ride.analysisVersion >= TrailAnalysis.ANALYSIS_VERSION) return

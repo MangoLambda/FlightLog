@@ -51,6 +51,7 @@ import com.example.flightlog.maps.MapStyle
 import com.example.flightlog.maps.MapTileCache
 import com.example.flightlog.ui.theme.Amber
 import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
@@ -95,6 +96,9 @@ private const val BOUNDARY_END_SOURCE = "flightlog-boundary-end"
 private const val BOUNDARY_START_IMAGE = "flightlog-boundary-start-image"
 private const val BOUNDARY_END_IMAGE = "flightlog-boundary-end-image"
 private const val JUMP_SOURCE = "flightlog-jumps"
+private const val JUMP_SELECTED_LAYER = "flightlog-selected-jump"
+private const val JUMP_CIRCLE_LAYER = "flightlog-jump-points"
+private const val JUMP_LABEL_LAYER = "flightlog-jump-labels"
 private const val STOP_SOURCE = "flightlog-stops"
 private const val STOP_IMAGE = "flightlog-stop-image"
 private const val SPLIT_ROUTE_SOURCE = "flightlog-split-routes"
@@ -103,6 +107,7 @@ private const val SPLIT_LABEL_SOURCE = "flightlog-split-labels"
 private const val RIDER_SOURCE = "flightlog-rider"
 private const val RIDER_IMAGE = "flightlog-rider-arrow"
 private const val RIDER_ZOOM = 14.5
+private const val JUMP_ZOOM = 17.0
 
 private enum class BoundaryDragTarget { START, END }
 
@@ -131,6 +136,8 @@ fun TrailMap(
     boundaryEnd: TrackPointEntity? = null,
     onBoundaryStartChange: ((TrackPointEntity) -> Unit)? = null,
     onBoundaryEndChange: ((TrackPointEntity) -> Unit)? = null,
+    selectedJumpId: Long? = null,
+    onJumpClick: ((Long) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val routePaddingPixels = with(LocalDensity.current) { 96.dp.roundToPx() }
@@ -143,12 +150,14 @@ fun TrailMap(
     var followingRider by remember { mutableStateOf(showRider) }
     val mapView = remember { mutableStateOf<MapView?>(null) }
     val tileActionListener = remember { mutableStateOf<MapView.OnTileActionListener?>(null) }
+    val mapClickListener = remember { mutableStateOf<MapLibreMap.OnMapClickListener?>(null) }
     val boundaryDragState = remember { BoundaryDragState() }
     val currentPoints = rememberUpdatedState(points)
     val currentBoundaryStart = rememberUpdatedState(boundaryStart)
     val currentBoundaryEnd = rememberUpdatedState(boundaryEnd)
     val currentOnBoundaryStartChange = rememberUpdatedState(onBoundaryStartChange)
     val currentOnBoundaryEndChange = rememberUpdatedState(onBoundaryEndChange)
+    val currentOnJumpClick = rememberUpdatedState(onJumpClick)
     val routeFitKey = remember(points) {
         Triple(points.size, points.firstOrNull()?.recordedAt, points.lastOrNull()?.recordedAt)
     }
@@ -163,6 +172,7 @@ fun TrailMap(
                 stopPoints = stopPoints,
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
+                selectedJumpId = selectedJumpId,
             )
         }
     }
@@ -180,6 +190,7 @@ fun TrailMap(
                 stopPoints = stopPoints,
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
+                selectedJumpId = selectedJumpId,
             )
         }
     }
@@ -193,8 +204,21 @@ fun TrailMap(
                 stopPoints = stopPoints,
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
+                selectedJumpId = selectedJumpId,
             )
         }
+    }
+
+    LaunchedEffect(map, selectedJumpId, jumps) {
+        val selected = jumps.firstOrNull { it.id == selectedJumpId }
+        val latitude = selected?.latitude ?: return@LaunchedEffect
+        val longitude = selected.longitude ?: return@LaunchedEffect
+        val readyMap = map ?: return@LaunchedEffect
+        val camera = CameraPosition.Builder()
+            .target(LatLng(latitude, longitude))
+            .zoom(maxOf(readyMap.cameraPosition.zoom, JUMP_ZOOM))
+            .build()
+        readyMap.animateCamera(CameraUpdateFactory.newCameraPosition(camera), 350)
     }
 
     Box(modifier) {
@@ -238,6 +262,22 @@ fun TrailMap(
                                 followingRider = false
                             }
                         }
+                        MapLibreMap.OnMapClickListener { coordinate ->
+                            val feature = readyMap.queryRenderedFeatures(
+                                readyMap.projection.toScreenLocation(coordinate),
+                                JUMP_SELECTED_LAYER,
+                                JUMP_CIRCLE_LAYER,
+                                JUMP_LABEL_LAYER,
+                            ).firstOrNull()
+                            val jumpId = feature?.getNumberProperty("jumpId")?.toLong()
+                            if (jumpId == null) false else {
+                                currentOnJumpClick.value?.invoke(jumpId)
+                                true
+                            }
+                        }.also {
+                            mapClickListener.value = it
+                            readyMap.addOnMapClickListener(it)
+                        }
                     }
                 }
             },
@@ -250,6 +290,7 @@ fun TrailMap(
                     splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                     boundaryStart = boundaryStart,
                     boundaryEnd = boundaryEnd,
+                    selectedJumpId = selectedJumpId,
                 )
             },
         )
@@ -265,6 +306,7 @@ fun TrailMap(
                         stopPoints = stopPoints,
                         splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                         boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
+                        selectedJumpId = selectedJumpId,
                     )
                 },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
@@ -313,6 +355,7 @@ fun TrailMap(
             if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) mapView.value?.onPause()
             if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) mapView.value?.onStop()
             tileActionListener.value?.let { mapView.value?.removeOnTileActionListener(it) }
+            mapClickListener.value?.let { listener -> map?.removeOnMapClickListener(listener) }
             mapView.value?.onDestroy()
         }
     }
@@ -463,8 +506,15 @@ private fun addRideLayers(style: Style, context: Context) {
         lineColor("#FFB84D"), lineWidth(4f), lineDasharray(arrayOf(2f, 2f)),
     ))
     style.addSource(GeoJsonSource(JUMP_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
-    style.addLayer(CircleLayer("flightlog-jump-points", JUMP_SOURCE).withProperties(
-        circleColor("#FFB84D"), circleRadius(6f),
+    style.addLayer(CircleLayer(JUMP_SELECTED_LAYER, JUMP_SOURCE).withProperties(
+        circleColor("#42D9E8"), circleRadius(14f),
+    ).withFilter(Expression.eq(Expression.get("selected"), Expression.literal(true))))
+    style.addLayer(CircleLayer(JUMP_CIRCLE_LAYER, JUMP_SOURCE).withProperties(
+        circleColor("#132019"), circleRadius(11f),
+    ))
+    style.addLayer(SymbolLayer(JUMP_LABEL_LAYER, JUMP_SOURCE).withProperties(
+        textField(Expression.get("label")), textSize(12f), textColor("#FFFFFF"),
+        textHaloColor("#132019"), textHaloWidth(1f), textAllowOverlap(true),
     ))
     style.addSource(GeoJsonSource(SPLIT_ROUTE_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(LineLayer("flightlog-split-route-lines", SPLIT_ROUTE_SOURCE).withProperties(
@@ -514,6 +564,7 @@ private fun updateMap(
     selectedSplitIndex: Int = 0,
     boundaryStart: TrackPointEntity? = null,
     boundaryEnd: TrackPointEntity? = null,
+    selectedJumpId: Long? = null,
 ) {
     val readyMap = map ?: return
     readyMap.getStyle { style ->
@@ -543,10 +594,15 @@ private fun updateMap(
             arrayOf(Feature.fromGeometry(LineString.fromLngLats(comparisonPoints.map { Point.fromLngLat(it.longitude, it.latitude) })))
         } else emptyArray()
         style.getSourceAs<GeoJsonSource>(COMPARISON_ROUTE_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(comparisonFeatures))
+        val numbers = jumpNumbers(jumps)
         val jumpFeatures = jumps.mapNotNull { jump ->
             val lat = jump.latitude ?: return@mapNotNull null
             val lon = jump.longitude ?: return@mapNotNull null
-            Feature.fromGeometry(Point.fromLngLat(lon, lat))
+            Feature.fromGeometry(Point.fromLngLat(lon, lat)).apply {
+                addNumberProperty("jumpId", jump.id)
+                addStringProperty("label", numbers[jump.id]?.toString() ?: "")
+                addBooleanProperty("selected", jump.id == selectedJumpId)
+            }
         }
         style.getSourceAs<GeoJsonSource>(JUMP_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(jumpFeatures))
         val stopFeatures = stopPoints.map {
@@ -582,7 +638,13 @@ private fun updateMap(
             })
         } ?: emptyArray()
         style.getSourceAs<GeoJsonSource>(RIDER_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(riderFeatures))
-        if (fitRoute && points.size >= 2) {
+        val selectedJump = jumps.firstOrNull { it.id == selectedJumpId }
+        if (fitRoute && selectedJump?.latitude != null && selectedJump.longitude != null) {
+            readyMap.cameraPosition = CameraPosition.Builder()
+                .target(LatLng(selectedJump.latitude, selectedJump.longitude))
+                .zoom(maxOf(readyMap.cameraPosition.zoom, JUMP_ZOOM))
+                .build()
+        } else if (fitRoute && points.size >= 2) {
             val bounds = LatLngBounds.Builder()
                 .includes(points.map { LatLng(it.latitude, it.longitude) })
                 .build()

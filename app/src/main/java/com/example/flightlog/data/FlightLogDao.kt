@@ -17,6 +17,7 @@ interface FlightLogDao {
     @Insert suspend fun insertTrackPoint(point: TrackPointEntity): Long
     @Insert suspend fun insertJump(jump: JumpEventEntity): Long
     @Update suspend fun updateJump(jump: JumpEventEntity)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertJumpMotionTrace(trace: JumpMotionTraceEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertTelemetryChunk(chunk: TelemetryChunkEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertSpatialProfiles(profiles: List<SpatialProfileEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertStopEvents(events: List<StopEventEntity>): List<Long>
@@ -45,6 +46,9 @@ interface FlightLogDao {
 
     @Query("SELECT * FROM jump_events WHERE rideId = :rideId ORDER BY takeoffAt")
     fun observeJumpsForRide(rideId: Long): Flow<List<JumpEventEntity>>
+
+    @Query("SELECT * FROM jump_motion_traces WHERE jumpId = :jumpId")
+    fun observeJumpMotionTrace(jumpId: Long): Flow<JumpMotionTraceEntity?>
 
     @Query("SELECT * FROM track_points WHERE rideId = :rideId ORDER BY recordedAt")
     fun observeTrackPoints(rideId: Long): Flow<List<TrackPointEntity>>
@@ -76,8 +80,23 @@ interface FlightLogDao {
     @Query("SELECT * FROM jump_events WHERE rideId = :rideId ORDER BY takeoffAt")
     suspend fun jumps(rideId: Long): List<JumpEventEntity>
 
+    @Query("SELECT * FROM jump_events WHERE rideId = :rideId AND takeoffAt = :takeoffAt LIMIT 1")
+    suspend fun jumpByTakeoff(rideId: Long, takeoffAt: Long): JumpEventEntity?
+
+    @Query("SELECT * FROM jump_motion_traces WHERE jumpId = :jumpId")
+    suspend fun jumpMotionTrace(jumpId: Long): JumpMotionTraceEntity?
+
+    @Query("SELECT * FROM jump_motion_traces ORDER BY jumpId")
+    suspend fun allJumpMotionTraces(): List<JumpMotionTraceEntity>
+
+    @Query("SELECT jump_events.* FROM jump_events LEFT JOIN jump_motion_traces ON jump_motion_traces.jumpId = jump_events.id WHERE jump_motion_traces.jumpId IS NULL AND EXISTS (SELECT 1 FROM telemetry_chunks WHERE telemetry_chunks.rideId = jump_events.rideId AND telemetry_chunks.kind = 'MOTION' AND telemetry_chunks.endedAt >= jump_events.takeoffAt - 750 AND telemetry_chunks.startedAt <= jump_events.landingAt + 350) ORDER BY jump_events.rideId, jump_events.takeoffAt")
+    suspend fun jumpsMissingMotionTrace(): List<JumpEventEntity>
+
     @Query("SELECT * FROM telemetry_chunks WHERE rideId = :rideId ORDER BY startedAt")
     suspend fun telemetryChunks(rideId: Long): List<TelemetryChunkEntity>
+
+    @Query("SELECT * FROM telemetry_chunks WHERE rideId = :rideId AND kind = 'MOTION' AND endedAt >= :startedAt AND startedAt <= :endedAt ORDER BY startedAt")
+    suspend fun motionChunksInWindow(rideId: Long, startedAt: Long, endedAt: Long): List<TelemetryChunkEntity>
 
     @Query("SELECT * FROM telemetry_chunks ORDER BY rideId, startedAt")
     suspend fun allTelemetryChunks(): List<TelemetryChunkEntity>
@@ -204,7 +223,8 @@ interface FlightLogDao {
         (SELECT COUNT(*) * 96 FROM stop_events) +
         (SELECT COUNT(*) * 128 FROM trail_pause_zones) +
         (SELECT COUNT(*) * 96 FROM trail_stop_observations) +
-        (SELECT COUNT(*) * 144 FROM section_efforts)
+        (SELECT COUNT(*) * 144 FROM section_efforts) +
+        (SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM jump_motion_traces)
     """)
     fun observeEstimatedProfileBytes(): Flow<Long>
 

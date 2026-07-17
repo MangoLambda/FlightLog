@@ -18,6 +18,7 @@ class RideProcessingWorker(
     override suspend fun doWork(): Result {
         val app = applicationContext as FlightLogApplication
         return try {
+            app.rideProcessor.materializeMissingJumpTraces()
             app.database.dao().ridesNeedingProcessing(TrailAnalysis.ANALYSIS_VERSION)
                 .forEach { app.rideProcessor.compactAndAnalyze(it.id) }
             app.rideProcessor.cleanupExpiredMotion()

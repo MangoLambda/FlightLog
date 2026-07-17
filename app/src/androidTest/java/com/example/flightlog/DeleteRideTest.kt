@@ -25,10 +25,14 @@ class DeleteRideTest {
             rideId = finishedId, recordedAt = 1_000, latitude = 45.5, longitude = -73.5,
             altitudeMeters = null, speedMps = 5.0, bearingDegrees = null, accuracyMeters = 3f,
         ))
-        dao.insertJump(JumpEventEntity(
+        val jumpId = dao.insertJump(JumpEventEntity(
             rideId = finishedId, takeoffAt = 1_200, landingAt = 1_500,
             estimatedFlightSeconds = .3, estimatedHeightMeters = .1, estimatedDistanceMeters = 1.5,
             confidence = 80, sensorQuality = SensorQuality.FULL,
+        ))
+        dao.insertJumpMotionTrace(JumpMotionTraceEntity(
+            jumpId = jumpId, startedAt = 1_000, endedAt = 1_500,
+            encodingVersion = 1, sampleCount = 1, payload = byteArrayOf(1), checksum = "test",
         ))
         dao.insertTelemetryChunk(TelemetryChunkEntity(
             rideId = finishedId, kind = TelemetryKind.GPS, startedAt = 1_000, endedAt = 1_000,
@@ -61,6 +65,7 @@ class DeleteRideTest {
         assertNull(dao.ride(finishedId))
         assertEquals(0, dao.trackPoints(finishedId).size)
         assertEquals(0, dao.jumps(finishedId).size)
+        assertEquals(0, dao.allJumpMotionTraces().size)
         assertEquals(0, dao.telemetryChunks(finishedId).size)
         assertEquals(0, dao.allTrails().size)
         assertEquals(0, dao.allSections().size)

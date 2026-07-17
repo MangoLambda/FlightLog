@@ -15,12 +15,16 @@ import com.example.flightlog.data.TrailSectionEntity
 import com.example.flightlog.data.TrailPassEntity
 import com.example.flightlog.data.TrailStopObservationEntity
 import com.example.flightlog.data.SectionEffortEntity
+import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.domain.RideState
 import com.example.flightlog.domain.TrailState
 import com.example.flightlog.domain.PauseZoneState
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
+import com.example.flightlog.domain.SensorQuality
 import com.example.flightlog.export.FlightLogBackup
+import com.example.flightlog.tracking.JumpMotionTrace
+import com.example.flightlog.tracking.MotionSample
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.runBlocking
@@ -40,6 +44,15 @@ class FlightLogBackupTest {
             rideId = rideId, recordedAt = 1_000, latitude = 45.5, longitude = -73.5,
             altitudeMeters = 10.0, speedMps = 5.0, bearingDegrees = 90f, accuracyMeters = 3f,
         ))
+        val jumpId = source.dao().insertJump(JumpEventEntity(
+            rideId = rideId, takeoffAt = 1_200, landingAt = 1_500,
+            estimatedFlightSeconds = .3, estimatedHeightMeters = .1, estimatedDistanceMeters = 1.5,
+            confidence = 80, sensorQuality = SensorQuality.FULL,
+        ))
+        source.dao().insertJumpMotionTrace(JumpMotionTrace.encode(jumpId, listOf(
+            MotionSample(1_100, 0f, 0f, 9.8f, 0f, 0f, 0f),
+            MotionSample(1_500, 0f, 0f, 18f, 0f, 0f, 0f),
+        )))
         source.dao().insertSpatialProfiles(listOf(SpatialProfileEntity(
             rideId = rideId,
             distanceBin = 0,
@@ -93,6 +106,8 @@ class FlightLogBackupTest {
         val first = backup.import(ByteArrayInputStream(bytes))
         val importedRideId = destination.dao().allRides().single().id
         assertEquals(1, destination.dao().telemetryChunks(importedRideId).size)
+        val importedJump = destination.dao().jumps(importedRideId).single()
+        assertEquals(2, destination.dao().jumpMotionTrace(importedJump.id)?.sampleCount)
         assertEquals(10.0, destination.dao().spatialProfiles(importedRideId).single().altitudeMeters!!, .01)
         assertEquals(1_234L, destination.dao().spatialProfiles(importedRideId).single().maximumSampleGapMillis)
         assertEquals(1, destination.dao().allStopEvents().size)

@@ -88,6 +88,25 @@ data class JumpEventEntity(
 }
 
 @Entity(
+    tableName = "jump_motion_traces",
+    foreignKeys = [ForeignKey(
+        entity = JumpEventEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["jumpId"],
+        onDelete = ForeignKey.CASCADE,
+    )],
+)
+data class JumpMotionTraceEntity(
+    @PrimaryKey val jumpId: Long,
+    val startedAt: Long,
+    val endedAt: Long,
+    val encodingVersion: Int,
+    val sampleCount: Int,
+    val payload: ByteArray,
+    val checksum: String,
+)
+
+@Entity(
     tableName = "telemetry_chunks",
     foreignKeys = [ForeignKey(entity = RideEntity::class, parentColumns = ["id"], childColumns = ["rideId"], onDelete = ForeignKey.CASCADE)],
     indices = [Index("rideId"), Index(value = ["rideId", "kind", "startedAt"]), Index("expiresAt")],

@@ -84,6 +84,12 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
         if (id == null) flowOf(emptyList()) else repository.jumps(id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val selectedJumpMotion = combine(selectedJumpId, selectedRideJumps) { jumpId, rideJumps ->
+        rideJumps.firstOrNull { it.id == jumpId }
+    }.flatMapLatest { jump ->
+        if (jump == null) flowOf(emptyList()) else repository.jumpMotion(jump)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     val selectedRideStops = selectedRideId.flatMapLatest { id ->
         if (id == null) flowOf(emptyList()) else repository.stops(id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -104,7 +110,12 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun openRide(rideId: Long) {
         selectedRideId.value = rideId
+        selectedJumpId.value = null
         screen.value = AppScreen.REVIEW
+    }
+
+    fun selectJump(jumpId: Long) {
+        selectedJumpId.value = jumpId
     }
 
     fun openJump(jumpId: Long) {

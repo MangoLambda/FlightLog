@@ -35,6 +35,9 @@ class FlightLogBackup(
         val sectionUuids = sections.associate { it.id to it.uuid }
         val passes = dao.allPasses()
         val passUuids = passes.associate { it.id to it.uuid }
+        val jumps = rides.flatMap { ride -> dao.jumps(ride.id) }
+        val jumpsById = jumps.associateBy { it.id }
+        val jumpTraces = dao.allJumpMotionTraces()
         val chunks = dao.allTelemetryChunks().toMutableList()
         rides.filter { ride -> chunks.none { it.rideId == ride.id && it.kind == TelemetryKind.GPS } }.forEach { ride ->
             dao.trackPoints(ride.id).chunked(10_000).filter { it.isNotEmpty() }.forEach { points ->
@@ -47,7 +50,11 @@ class FlightLogBackup(
                 .put("createdAt", System.currentTimeMillis()).toString())
             zip.jsonLines("rides.jsonl", rides.map { it.json() })
             zip.jsonLines("stops.jsonl", stopEvents.map { it.json(rideUuids.getValue(it.rideId)) })
-            zip.jsonLines("jumps.jsonl", rides.flatMap { ride -> dao.jumps(ride.id).map { it.json(ride.uuid) } })
+            zip.jsonLines("jumps.jsonl", jumps.map { it.json(rideUuids.getValue(it.rideId)) })
+            zip.jsonLines("jump-traces.jsonl", jumpTraces.map { trace ->
+                val jump = jumpsById.getValue(trace.jumpId)
+                trace.json(rideUuids.getValue(jump.rideId), jump.takeoffAt)
+            })
             zip.jsonLines("chunks.jsonl", chunks.map { it.json(rideUuids.getValue(it.rideId)) })
             zip.jsonLines("profiles.jsonl", dao.allSpatialProfiles().map { it.json(rideUuids.getValue(it.rideId)) })
             zip.jsonLines("trails.jsonl", trails.map { it.json(rideUuids.getValue(it.canonicalRideId)) })
@@ -69,6 +76,13 @@ class FlightLogBackup(
                 zip.write(chunk.payload)
                 zip.closeEntry()
             }
+            jumpTraces.forEach { trace ->
+                val jump = jumpsById.getValue(trace.jumpId)
+                val rideUuid = rideUuids.getValue(jump.rideId)
+                zip.putNextEntry(ZipEntry(jumpTracePath(rideUuid, jump.takeoffAt)))
+                zip.write(trace.payload)
+                zip.closeEntry()
+            }
             rides.forEach { ride ->
                 val points = loadPoints(ride)
                 zip.json("tracks/${ride.uuid}.gpx", RideExporter.gpx(ride, points))
@@ -84,6 +98,7 @@ class FlightLogBackup(
             val format = manifest.getInt("format")
             require(format in 1..FORMAT_VERSION) { "Unsupported FlightLog backup version" }
             if (format >= 2) require(V2_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
+            if (format >= 3) require(V3_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
             return database.withTransaction { restore(directory) }
         } finally {
             directory.deleteRecursively()
@@ -140,6 +155,33 @@ class FlightLogBackup(
                 confidence = json.getInt("confidence").also { require(it in 0..100) },
                 status = JumpStatus.valueOf(json.getString("status")), sensorQuality = SensorQuality.valueOf(json.getString("sensorQuality")),
                 latitude = json.nullableDouble("latitude"), longitude = json.nullableDouble("longitude"),
+            ))
+        }
+        directory.forEachJsonIfPresent("jump-traces.jsonl") { json ->
+            val rideUuid = json.requiredUuid("rideUuid")
+            val rideId = rideIds[rideUuid] ?: error("Jump trace references unknown ride")
+            val takeoffAt = json.getLong("takeoffAt")
+            val jump = dao.jumpByTakeoff(rideId, takeoffAt) ?: error("Jump trace references unknown jump")
+            val payload = File(directory, jumpTracePath(rideUuid, takeoffAt)).readBytes()
+            val checksum = json.getString("checksum")
+            val samples = TelemetryCodec.decodeMotion(payload, checksum)
+            val startedAt = json.getLong("startedAt")
+            val endedAt = json.getLong("endedAt")
+            val sampleCount = json.getInt("sampleCount")
+            require(sampleCount in 1..MAX_JUMP_TRACE_SAMPLES && samples.size == sampleCount)
+            require(startedAt == samples.first().timestampMillis && endedAt == samples.last().timestampMillis)
+            val window = com.example.flightlog.tracking.JumpMotionTrace.window(jump)
+            require(startedAt >= window.first && endedAt <= window.last)
+            dao.insertJumpMotionTrace(JumpMotionTraceEntity(
+                jumpId = jump.id,
+                startedAt = startedAt,
+                endedAt = endedAt,
+                encodingVersion = json.getInt("encodingVersion").also {
+                    require(it == TelemetryCodec.ENCODING_VERSION)
+                },
+                sampleCount = sampleCount,
+                payload = payload,
+                checksum = checksum,
             ))
         }
         directory.forEachJson("chunks.jsonl") { json ->
@@ -307,7 +349,8 @@ class FlightLogBackup(
                 require(seen.add(name)) { "Duplicate backup entry" }
                 if (first) require(name == "manifest.json") { "Backup manifest must be first" }
                 first = false
-                val allowed = name in METADATA || name.startsWith("telemetry/") || name.startsWith("tracks/")
+                val allowed = name in METADATA || name.startsWith("telemetry/") ||
+                    name.startsWith("jump-traces/") || name.startsWith("tracks/")
                 require(allowed) { "Unknown backup entry" }
                 val target = File(directory, name)
                 target.parentFile?.mkdirs()
@@ -336,7 +379,8 @@ class FlightLogBackup(
 
     companion object {
         const val MIME_TYPE = "application/zip"
-        private const val FORMAT_VERSION = 2
+        private const val FORMAT_VERSION = 3
+        private const val MAX_JUMP_TRACE_SAMPLES = 10_000
         private const val MAX_ENTRY_BYTES = 512L * 1024 * 1024
         private const val MAX_TOTAL_BYTES = 2L * 1024 * 1024 * 1024
         private val REQUIRED_METADATA = setOf(
@@ -344,9 +388,12 @@ class FlightLogBackup(
             "trails.jsonl", "sections.jsonl", "passes.jsonl", "efforts.jsonl",
         )
         private val V2_METADATA = setOf("stops.jsonl", "pause-zones.jsonl", "stop-observations.jsonl")
-        private val METADATA = REQUIRED_METADATA + V2_METADATA
+        private val V3_METADATA = setOf("jump-traces.jsonl")
+        private val METADATA = REQUIRED_METADATA + V2_METADATA + V3_METADATA
     }
 }
+
+private fun jumpTracePath(rideUuid: String, takeoffAt: Long) = "jump-traces/$rideUuid-$takeoffAt.bin"
 
 private fun ZipOutputStream.json(name: String, value: String) {
     putNextEntry(ZipEntry(name)); write(value.toByteArray(Charsets.UTF_8)); closeEntry()
@@ -386,6 +433,10 @@ private fun JumpEventEntity.json(rideUuid: String) = JSONObject().put("rideUuid"
     .put("estimatedFlightSeconds", estimatedFlightSeconds).put("estimatedHeightMeters", estimatedHeightMeters).put("estimatedDistanceMeters", estimatedDistanceMeters)
     .putNullable("correctedFlightSeconds", correctedFlightSeconds).putNullable("correctedHeightMeters", correctedHeightMeters).putNullable("correctedDistanceMeters", correctedDistanceMeters)
     .put("confidence", confidence).put("status", status.name).put("sensorQuality", sensorQuality.name).putNullable("latitude", latitude).putNullable("longitude", longitude)
+private fun JumpMotionTraceEntity.json(rideUuid: String, takeoffAt: Long) = JSONObject()
+    .put("rideUuid", rideUuid).put("takeoffAt", takeoffAt)
+    .put("startedAt", startedAt).put("endedAt", endedAt).put("encodingVersion", encodingVersion)
+    .put("sampleCount", sampleCount).put("checksum", checksum)
 private fun TelemetryChunkEntity.json(rideUuid: String) = JSONObject().put("uuid", uuid).put("rideUuid", rideUuid).put("kind", kind.name)
     .put("startedAt", startedAt).put("endedAt", endedAt).put("encodingVersion", encodingVersion).put("sampleCount", sampleCount)
     .put("checksum", checksum).putNullable("expiresAt", expiresAt)

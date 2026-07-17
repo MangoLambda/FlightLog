@@ -2,7 +2,10 @@ package com.example.flightlog.data
 
 import com.example.flightlog.domain.JumpStatus
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import com.example.flightlog.tracking.JumpMotionTrace
+import com.example.flightlog.tracking.MotionSample
 
 class RideRepository(private val dao: FlightLogDao) {
     val rides: Flow<List<RideEntity>> = dao.observeRides()
@@ -22,6 +25,9 @@ class RideRepository(private val dao: FlightLogDao) {
         if (points.isNotEmpty()) points else compactedPoints(rideId)
     }
     fun jumps(rideId: Long) = dao.observeJumpsForRide(rideId)
+    fun jumpMotion(jump: JumpEventEntity): Flow<List<MotionSample>> = dao.observeJumpMotionTrace(jump.id)
+        .map { trace -> trace?.let(JumpMotionTrace::decode) ?: JumpMotionTrace.loadRaw(dao, jump) }
+        .catch { emit(emptyList()) }
     fun stops(rideId: Long) = dao.observeStopEventsForRide(rideId)
     suspend fun setJumpStatus(id: Long, status: JumpStatus) = dao.setJumpStatus(id, status)
     suspend fun updateJump(jump: JumpEventEntity) = dao.updateJump(jump)

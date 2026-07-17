@@ -16,6 +16,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -33,7 +34,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
@@ -69,6 +74,7 @@ import com.example.flightlog.maps.MapTileCache
 import com.example.flightlog.maps.TileCacheState
 import com.example.flightlog.maps.TileCacheStatus
 import com.example.flightlog.tracking.LiveRideState
+import com.example.flightlog.tracking.MotionSample
 import com.example.flightlog.tracking.GpsStatus
 import com.example.flightlog.tracking.RideMath
 import com.example.flightlog.tracking.RideTrackingService
@@ -89,6 +95,9 @@ import com.example.flightlog.ui.FullRunsOverview
 import com.example.flightlog.ui.IdealRunCard
 import com.example.flightlog.ui.TrailComparisonScreen
 import com.example.flightlog.ui.flightLogTopAppBarColors
+import com.example.flightlog.ui.accelerationTrace
+import com.example.flightlog.ui.flightArc
+import com.example.flightlog.ui.jumpNumbers
 import com.example.flightlog.ui.routeForRange
 import com.example.flightlog.ui.pointAtDistance
 import com.example.flightlog.maps.MapStyle
@@ -103,6 +112,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -138,6 +148,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val backupState by vm.backupState.collectAsStateWithLifecycle()
     val points by vm.selectedPoints.collectAsStateWithLifecycle()
     val selectedJumps by vm.selectedRideJumps.collectAsStateWithLifecycle()
+    val selectedJumpMotion by vm.selectedJumpMotion.collectAsStateWithLifecycle()
     val selectedStops by vm.selectedRideStops.collectAsStateWithLifecycle()
     val imperial by vm.imperial.collectAsStateWithLifecycle()
     val recordingSettings by vm.recordingSettings.collectAsStateWithLifecycle()
@@ -337,6 +348,8 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         mapStyle = mapStyle,
                         imperial = imperial,
                         onBack = { vm.screen.value = AppScreen.HISTORY },
+                        selectedJumpId = selectedJumpId,
+                        onSelectJump = vm::selectJump,
                         onOpenJump = vm::openJump,
                         onStatus = vm::setJumpStatus,
                         onShare = { selectedRideId?.let(vm::shareRide) },
@@ -345,10 +358,16 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onConfigureMap = openMapSettings,
                     )
                     AppScreen.JUMP_DETAIL -> JumpDetailScreen(
-                        jump = jumps.firstOrNull { it.id == selectedJumpId },
+                        jump = selectedJumps.firstOrNull { it.id == selectedJumpId },
+                        jumpNumber = jumpNumbers(selectedJumps)[selectedJumpId],
+                        points = points,
+                        motion = selectedJumpMotion,
+                        mapApiKey = effectiveMapApiKey,
+                        mapStyle = mapStyle,
                         imperial = imperial,
                         onBack = { vm.screen.value = AppScreen.REVIEW },
                         onSave = vm::saveJump,
+                        onConfigureMap = openMapSettings,
                     )
                     AppScreen.TRAIL_DETAIL -> TrailDetailScreen(
                         trail = trails.firstOrNull { it.id == selectedTrailId },
@@ -626,6 +645,8 @@ private fun ReviewScreen(
     mapStyle: MapStyle,
     imperial: Boolean,
     onBack: () -> Unit,
+    selectedJumpId: Long?,
+    onSelectJump: (Long) -> Unit,
     onOpenJump: (Long) -> Unit,
     onStatus: (Long, JumpStatus) -> Unit,
     onShare: () -> Unit,
@@ -634,6 +655,13 @@ private fun ReviewScreen(
     onConfigureMap: () -> Unit,
 ) {
     if (ride == null) { EmptyCard("Ride unavailable", "This ride could not be loaded."); return }
+    val numbers = remember(jumps) { jumpNumbers(jumps) }
+    val jumpListState = rememberLazyListState()
+    val pendingCount = jumps.count { it.status == JumpStatus.PENDING }
+    LaunchedEffect(selectedJumpId, jumps) {
+        val index = jumps.indexOfFirst { it.id == selectedJumpId }
+        if (index >= 0) jumpListState.animateScrollToItem(1 + (if (pendingCount > 0) 1 else 0) + index)
+    }
     var confirmingDelete by rememberSaveable(ride.id) { mutableStateOf(false) }
     if (confirmingDelete) {
         AlertDialog(
@@ -686,6 +714,8 @@ private fun ReviewScreen(
                 modifier = Modifier.matchParentSize(),
                 onConfigureMap = onConfigureMap,
                 fitRoute = true,
+                selectedJumpId = selectedJumpId,
+                onJumpClick = onSelectJump,
             )
             if (points.isEmpty()) {
                 Box(
@@ -710,7 +740,11 @@ private fun ReviewScreen(
                 }
             }
         }
-        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyColumn(
+            state = jumpListState,
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             if (points.isEmpty()) {
                 item {
                     EmptyCard(
@@ -726,15 +760,22 @@ private fun ReviewScreen(
                         Metric("AIRTIME", String.format(Locale.US, "%.1fs", jumps.filter { it.status == JumpStatus.CONFIRMED }.sumOf { it.displayFlightSeconds }))
                     }
                 }
-                val pending = jumps.count { it.status == JumpStatus.PENDING }
-                if (pending > 0) item {
+                if (pendingCount > 0) item {
                     Surface(color = Amber.copy(alpha = .18f), shape = RoundedCornerShape(14.dp)) {
-                        Text("$pending jumps need review", Modifier.fillMaxWidth().padding(14.dp), color = Amber, fontWeight = FontWeight.Bold)
+                        Text("$pendingCount jumps need review", Modifier.fillMaxWidth().padding(14.dp), color = Amber, fontWeight = FontWeight.Bold)
                     }
                 }
                 if (jumps.isEmpty()) item { EmptyCard("No jumps detected", "Rough impacts were filtered and no flight pattern was found.") }
                 items(jumps, key = { it.id }) { jump ->
-                    JumpCard(jump, imperial, { onOpenJump(jump.id) }, { onStatus(jump.id, it) })
+                    JumpCard(
+                        jump = jump,
+                        number = numbers.getValue(jump.id),
+                        imperial = imperial,
+                        selected = jump.id == selectedJumpId,
+                        onSelect = { onSelectJump(jump.id) },
+                        onOpen = { onOpenJump(jump.id) },
+                        onStatus = { onStatus(jump.id, it) },
+                    )
                 }
             }
         }
@@ -742,57 +783,232 @@ private fun ReviewScreen(
 }
 
 @Composable
-private fun JumpCard(jump: JumpEventEntity, imperial: Boolean, onEdit: () -> Unit, onStatus: (JumpStatus) -> Unit) {
-    Card {
+private fun JumpCard(
+    jump: JumpEventEntity,
+    number: Int,
+    imperial: Boolean,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    onOpen: () -> Unit,
+    onStatus: (JumpStatus) -> Unit,
+) {
+    Card(
+        onClick = onSelect,
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) Amber.copy(alpha = .16f) else MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        modifier = Modifier.semantics { contentDescription = "Jump $number${if (selected) ", selected" else ""}" },
+    ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Jump ${jump.id}", fontWeight = FontWeight.Bold)
+                Text("Jump $number", fontWeight = FontWeight.Bold)
                 SuggestionChip(onClick = {}, label = { Text("${jump.confidence}% confidence") })
             }
             Text("${String.format(Locale.US, "%.2fs", jump.displayFlightSeconds)} • ${formatHeight(jump.displayHeightMeters, imperial)} high • ${formatDistance(jump.displayDistanceMeters, imperial)} long")
             when (jump.status) {
-                JumpStatus.PENDING -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onStatus(JumpStatus.CONFIRMED) }) { Text("Confirm") }
-                    OutlinedButton(onClick = onEdit) { Text("Edit") }
+                JumpStatus.PENDING -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { onStatus(JumpStatus.CONFIRMED) }, modifier = Modifier.weight(1f)) { Text("Confirm") }
+                        OutlinedButton(onClick = onOpen, modifier = Modifier.weight(1f)) { Text("View flight") }
+                    }
                     TextButton(onClick = { onStatus(JumpStatus.REJECTED) }) { Text("Discard") }
                 }
-                JumpStatus.CONFIRMED -> TextButton(onClick = onEdit) { Text("Confirmed • Edit") }
-                JumpStatus.REJECTED -> TextButton(onClick = { onStatus(JumpStatus.PENDING) }) { Text("Discarded • Restore") }
+                JumpStatus.CONFIRMED -> TextButton(onClick = onOpen) { Text("View flight") }
+                JumpStatus.REJECTED -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onOpen) { Text("View flight") }
+                    TextButton(onClick = { onStatus(JumpStatus.PENDING) }) { Text("Restore") }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun JumpDetailScreen(jump: JumpEventEntity?, imperial: Boolean, onBack: () -> Unit, onSave: (JumpEventEntity, Double, Double, Double) -> Unit) {
+private fun JumpDetailScreen(
+    jump: JumpEventEntity?,
+    jumpNumber: Int?,
+    points: List<TrackPointEntity>,
+    motion: List<MotionSample>,
+    mapApiKey: String,
+    mapStyle: MapStyle,
+    imperial: Boolean,
+    onBack: () -> Unit,
+    onSave: (JumpEventEntity, Double, Double, Double) -> Unit,
+    onConfigureMap: () -> Unit,
+) {
     if (jump == null) { EmptyCard("Jump unavailable", "Return to the ride review."); return }
     var flight by rememberSaveable(jump.id) { mutableStateOf(String.format(Locale.US, "%.2f", jump.displayFlightSeconds)) }
     var height by rememberSaveable(jump.id) { mutableStateOf(String.format(Locale.US, "%.2f", jump.displayHeightMeters)) }
     var distance by rememberSaveable(jump.id) { mutableStateOf(String.format(Locale.US, "%.2f", jump.displayDistanceMeters)) }
+    val displayedFlight = flight.toDoubleOrNull()?.takeIf(Double::isFinite)?.coerceIn(0.0, 2.5) ?: jump.displayFlightSeconds
+    val displayedHeight = height.toDoubleOrNull()?.takeIf(Double::isFinite)?.coerceIn(0.0, 8.0) ?: jump.displayHeightMeters
+    val displayedDistance = distance.toDoubleOrNull()?.takeIf(Double::isFinite)?.coerceIn(0.0, 50.0) ?: jump.displayDistanceMeters
+    val nearbyPoints = remember(jump.id, points) {
+        val window = (jump.takeoffAt - 5_000L)..(jump.landingAt + 5_000L)
+        points.filter { it.recordedAt in window }.ifEmpty {
+            points.sortedBy { abs(it.recordedAt - jump.takeoffAt) }.take(20).sortedBy { it.recordedAt }
+        }
+    }
+    val acceleration = remember(jump.id, motion) { accelerationTrace(jump, motion) }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("Jump detail") },
+            title = { Text("Jump ${jumpNumber ?: ""}".trim()) },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             colors = flightLogTopAppBarColors(),
             windowInsets = WindowInsets(0, 0, 0, 0),
         )
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Surface(color = TrailCyan.copy(alpha = .14f), shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("ESTIMATED FLIGHT", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
-                    Text("${String.format(Locale.US, "%.2f", jump.estimatedFlightSeconds)} s", fontSize = 42.sp, fontWeight = FontWeight.Black)
-                    Text("${jump.confidence}% confidence • ${jump.sensorQuality.name.lowercase().replace('_', ' ')}")
+        LazyColumn(
+            contentPadding = PaddingValues(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            if (jump.latitude != null && jump.longitude != null) item {
+                Surface(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth().height(190.dp)) {
+                    TrailMap(
+                        points = nearbyPoints,
+                        jumps = listOf(jump),
+                        apiKey = mapApiKey,
+                        mapStyle = mapStyle,
+                        modifier = Modifier.fillMaxSize(),
+                        onConfigureMap = onConfigureMap,
+                        selectedJumpId = jump.id,
+                    )
                 }
             }
-            Text("Correct the estimate", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            DecimalField("Flight time (seconds)", flight) { flight = it }
-            DecimalField("Height (meters)", height) { height = it }
-            DecimalField("Distance (meters)", distance) { distance = it }
-            Text("Height uses g × airtime² ÷ 8. Distance uses takeoff speed × airtime. Values are not surveyed measurements.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Button(
-                onClick = { onSave(jump, flight.toDoubleOrNull() ?: jump.displayFlightSeconds, height.toDoubleOrNull() ?: jump.displayHeightMeters, distance.toDoubleOrNull() ?: jump.displayDistanceMeters) },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-            ) { Text("Save and confirm") }
+            item {
+                Surface(color = TrailCyan.copy(alpha = .14f), shape = RoundedCornerShape(20.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("ESTIMATED FLIGHT", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
+                        Text("${String.format(Locale.US, "%.2f", displayedFlight)} s", fontSize = 42.sp, fontWeight = FontWeight.Black)
+                        Text("${jump.confidence}% confidence • ${jump.sensorQuality.name.lowercase().replace('_', ' ')}")
+                    }
+                }
+            }
+            item { FlightArcChart(displayedFlight, displayedHeight, displayedDistance, imperial) }
+            item { AccelerationTraceChart(acceleration, jump.landingAt - jump.takeoffAt) }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Correct the estimate", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    DecimalField("Flight time (seconds)", flight) { flight = it }
+                    DecimalField("Height (meters)", height) { height = it }
+                    DecimalField("Distance (meters)", distance) { distance = it }
+                    Text(
+                        "The arc is modeled from airtime, height, and distance; it is not a measured 3D phone path. The acceleration trace is measured by the phone.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = { onSave(jump, displayedFlight, displayedHeight, displayedDistance) },
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                    ) { Text("Save and confirm") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FlightArcChart(flight: Double, height: Double, distance: Double, imperial: Boolean) {
+    val arc = remember(flight, height, distance) { flightArc(flight, height, distance) }
+    val lineColor = TrailCyan
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val textColor = MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Modeled flight arc", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "${formatHeight(height, imperial)} high • ${formatDistance(distance, imperial)} long",
+                color = textColor,
+            )
+            Canvas(
+                Modifier.fillMaxWidth().height(170.dp).semantics {
+                    contentDescription = "Modeled flight arc, ${String.format(Locale.US, "%.2f", flight)} seconds, ${formatHeight(height, imperial)} high, ${formatDistance(distance, imperial)} long"
+                },
+            ) {
+                val left = 12.dp.toPx()
+                val right = size.width - 12.dp.toPx()
+                val top = 12.dp.toPx()
+                val ground = size.height - 12.dp.toPx()
+                drawLine(gridColor, Offset(left, ground), Offset(right, ground), strokeWidth = 2f)
+                val path = Path()
+                arc.forEachIndexed { index, point ->
+                    val x = left + (right - left) * point.progress.toFloat()
+                    val normalizedHeight = if (height > 0.0) point.heightMeters / height else 0.0
+                    val y = ground - (ground - top) * normalizedHeight.toFloat()
+                    if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                drawPath(path, lineColor, style = Stroke(width = 5f, cap = StrokeCap.Round))
+                drawCircle(Amber, radius = 6.dp.toPx(), center = Offset(left, ground))
+                drawCircle(
+                    Lime,
+                    radius = 6.dp.toPx(),
+                    center = Offset((left + right) / 2f, if (height > 0.0) top else ground),
+                )
+                drawCircle(Amber, radius = 6.dp.toPx(), center = Offset(right, ground))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Takeoff", style = MaterialTheme.typography.labelMedium)
+                Text("Apex", style = MaterialTheme.typography.labelMedium)
+                Text("Landing", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccelerationTraceChart(trace: List<com.example.flightlog.ui.AccelerationPoint>, flightMillis: Long) {
+    val lineColor = Amber
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val flightColor = TrailCyan.copy(alpha = .14f)
+    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Measured phone acceleration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (trace.size < 2) {
+                Text(
+                    "Sensor trace unavailable for this ride. The modeled arc is still available.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.semantics { contentDescription = "Measured sensor trace unavailable" },
+                )
+            } else {
+                val maximumG = trace.maxOf { it.magnitudeG }.coerceAtLeast(2.0)
+                val pump = trace.filter { it.millisFromTakeoff <= 0L }.maxByOrNull { it.magnitudeG }
+                Canvas(
+                    Modifier.fillMaxWidth().height(140.dp).semantics {
+                        contentDescription = "Measured acceleration from pump through landing; peak ${String.format(Locale.US, "%.1f", maximumG)} g"
+                    },
+                ) {
+                    val start = trace.first().millisFromTakeoff
+                    val end = trace.last().millisFromTakeoff.coerceAtLeast(start + 1)
+                    fun x(milliseconds: Long) = ((milliseconds - start).toFloat() / (end - start)) * size.width
+                    val takeoffX = x(0L).coerceIn(0f, size.width)
+                    val landingX = x(flightMillis).coerceIn(0f, size.width)
+                    drawRect(flightColor, topLeft = Offset(takeoffX, 0f), size = androidx.compose.ui.geometry.Size((landingX - takeoffX).coerceAtLeast(0f), size.height))
+                    val oneG = size.height - (1.0 / maximumG * size.height).toFloat()
+                    drawLine(gridColor, Offset(0f, oneG), Offset(size.width, oneG), strokeWidth = 2f)
+                    val path = Path()
+                    trace.forEachIndexed { index, point ->
+                        val px = x(point.millisFromTakeoff)
+                        val py = size.height - (point.magnitudeG / maximumG * size.height).toFloat()
+                        if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                    }
+                    drawPath(path, lineColor, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                    pump?.let { point ->
+                        drawCircle(
+                            Lime,
+                            radius = 5.dp.toPx(),
+                            center = Offset(
+                                x(point.millisFromTakeoff),
+                                size.height - (point.magnitudeG / maximumG * size.height).toFloat(),
+                            ),
+                        )
+                    }
+                    drawLine(TrailCyan, Offset(takeoffX, 0f), Offset(takeoffX, size.height), strokeWidth = 2f)
+                    drawLine(TrailCyan, Offset(landingX, 0f), Offset(landingX, size.height), strokeWidth = 2f)
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Pump", style = MaterialTheme.typography.labelMedium)
+                    Text("Takeoff", style = MaterialTheme.typography.labelMedium)
+                    Text("Landing", style = MaterialTheme.typography.labelMedium)
+                }
+            }
         }
     }
 }
@@ -1390,7 +1606,7 @@ private fun SettingsScreen(
                     val profileMb = estimatedProfileBytes / (1_024.0 * 1_024.0)
                     Text(String.format(Locale.US, "Compressed telemetry %.1f MB • permanent profiles %.1f MB • raw motion %.1f MB", totalMb, profileMb, motionMb))
                     Text(
-                        nextMotionExpiry?.let { "The next raw-motion cleanup is ${formatDate(it)}. GPS and permanent spatial profiles are retained." }
+                        nextMotionExpiry?.let { "The next raw-motion cleanup is ${formatDate(it)}. GPS, spatial profiles, and per-jump sensor snippets are retained." }
                             ?: "No raw-motion cleanup is currently pending.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
