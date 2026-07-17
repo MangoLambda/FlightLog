@@ -15,7 +15,7 @@ import org.maplibre.android.MapLibre
 class FlightLogApplication : Application() {
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val database by lazy { FlightLogDatabase.get(this) }
-    val repository by lazy { RideRepository(database.dao()) }
+    val repository by lazy { RideRepository(database) }
     val rideProcessor by lazy { RideProcessor(database) }
 
     override fun onCreate() {

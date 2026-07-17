@@ -15,6 +15,8 @@ import com.example.flightlog.export.FlightLogBackup
 import android.net.Uri
 import com.example.flightlog.data.TrailSectionEntity
 import com.example.flightlog.data.TrailPauseZoneEntity
+import com.example.flightlog.data.TrailDefinitionDraft
+import com.example.flightlog.data.TrailEditImpact
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.maps.MapApiKeyStore
@@ -138,9 +140,23 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
         screen.value = AppScreen.TRAIL_DETAIL
     }
 
-    fun confirmTrail(trailId: Long, name: String, startMeters: Double, endMeters: Double) = viewModelScope.launch {
-        repository.confirmTrail(trailId, name, startMeters, endMeters)
-        app.rideProcessor.rebuildTrail(trailId)
+    suspend fun trailProfiles(rideId: Long) = repository.spatialProfiles(rideId)
+
+    suspend fun previewTrailDefinition(draft: TrailDefinitionDraft): TrailEditImpact =
+        repository.previewTrailDefinition(draft)
+
+    suspend fun saveTrailDefinition(draft: TrailDefinitionDraft, confirmedRemovalKeys: Set<String>): Long {
+        var trailId = 0L
+        app.database.withTransaction {
+            trailId = repository.saveTrailDefinition(draft, confirmedRemovalKeys)
+            app.rideProcessor.rebuildTrail(trailId)
+        }
+        selectedTrailId.value = trailId
+        val trailPasses = repository.trailPasses(trailId)
+        selectedPassAId.value = trailPasses.firstOrNull()?.id
+        selectedPassBId.value = trailPasses.drop(1).firstOrNull()?.id
+        screen.value = AppScreen.TRAIL_DETAIL
+        return trailId
     }
     fun confirmSection(sectionId: Long) = viewModelScope.launch { repository.confirmSection(sectionId) }
     fun updateSection(sectionId: Long, name: String, startMeters: Double, endMeters: Double) = viewModelScope.launch {

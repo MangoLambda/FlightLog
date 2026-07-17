@@ -25,13 +25,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Route
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -42,7 +48,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -60,18 +68,24 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.flightlog.data.SpatialProfileEntity
 import com.example.flightlog.data.TrackPointEntity
-import com.example.flightlog.data.TrailPassEntity
+import com.example.flightlog.data.RideEntity
+import com.example.flightlog.data.TrailDefinitionDraft
+import com.example.flightlog.data.TrailEditImpact
+import com.example.flightlog.data.TrailCustomItemKind
 import com.example.flightlog.maps.MapStyle
 import com.example.flightlog.ui.theme.Amber
 import com.example.flightlog.ui.theme.Lime
 import com.example.flightlog.ui.theme.TrailCyan
 import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sqrt
+import kotlinx.coroutines.launch
 
 private const val MINIMUM_TRAIL_LENGTH_METERS = 10.0
-private const val COVERAGE_TOLERANCE_METERS = 5.0
 private const val STOP_MINIMUM_DURATION_MILLIS = 10_000L
 private const val STOP_MAXIMUM_ACCURACY_METERS = 25f
 private const val STOP_MINIMUM_CORRIDOR_METERS = 15.0
@@ -80,6 +94,75 @@ private const val STOP_DEDUPLICATION_METERS = 15.0
 internal data class TrailBounds(val startMeters: Double, val endMeters: Double) {
     val lengthMeters: Double get() = endMeters - startMeters
 }
+
+@Composable
+private fun TrailImpactDialog(
+    impact: TrailEditImpact,
+    working: Boolean,
+    errorMessage: String?,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = { if (!working) onDismiss() },
+        title = { Text(if (impact.draft.trailId == null) "Create this trail?" else "Save trail changes?") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (impact.draft.trailId != null) {
+                    Text(
+                        "Matched rides: ${impact.previousMatchedRideCount} → ${impact.matchedRideCount}\n" +
+                            "Complete rides: ${impact.previousCompleteRideCount} → ${impact.completeRideCount}",
+                    )
+                } else {
+                    Text("${impact.matchedRideCount} matched · ${impact.completeRideCount} complete")
+                }
+                if (impact.preservedItems.isNotEmpty()) {
+                    Text("Kept", fontWeight = FontWeight.Bold)
+                    impact.preservedItems.forEach { item ->
+                        Text("• ${item.name} (${customItemLabel(item.kind)})", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                if (impact.removedItems.isNotEmpty()) {
+                    Text("Will be removed", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                    impact.removedItems.forEach { item ->
+                        Text("• ${item.name} (${customItemLabel(item.kind)})", color = MaterialTheme.colorScheme.error)
+                    }
+                    Text(
+                        "These items cannot be mapped inside the new trail boundaries.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    "Automatic matches, splits, efforts, and pause suggestions will be rebuilt.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm, enabled = !working) {
+                if (working) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else Text(if (impact.draft.trailId == null) "Create trail" else "Save changes")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !working) { Text("Cancel") } },
+    )
+}
+
+private fun customItemLabel(kind: TrailCustomItemKind): String = when (kind) {
+    TrailCustomItemKind.SECTION -> "manual section"
+    TrailCustomItemKind.PAUSE_ZONE -> "pause zone"
+}
+
+private val TrailRideDateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, yyyy · h:mm a")
+
+private fun rideLabel(ride: RideEntity?, fallbackId: Long, imperial: Boolean): String = ride?.let {
+    "${TrailRideDateFormatter.format(Instant.ofEpochMilli(it.startedAt).atZone(ZoneId.systemDefault()))} · " +
+        formatBoundaryDistance(it.distanceMeters, imperial)
+} ?: "Ride $fallbackId"
 
 /** Snaps both handles to sorted permanent spatial-analysis bins and keeps a usable range. */
 internal fun snapTrailBounds(
@@ -200,6 +283,25 @@ internal fun moveTrailEnd(
     return TrailBounds(current.startMeters, validEnd)
 }
 
+internal fun remapTrailBounds(
+    bounds: TrailBounds,
+    previousProfiles: List<SpatialProfileEntity>,
+    newProfiles: List<SpatialProfileEntity>,
+): TrailBounds? {
+    fun map(distanceMeters: Double): Double? {
+        val source = previousProfiles.minByOrNull { abs(it.distanceMeters - distanceMeters) } ?: return null
+        val target = newProfiles.minByOrNull {
+            coordinateDistanceMeters(source.latitude, source.longitude, it.latitude, it.longitude)
+        } ?: return null
+        val separation = coordinateDistanceMeters(source.latitude, source.longitude, target.latitude, target.longitude)
+        val corridor = maxOf(15.0, source.accuracyMeters * 2.0, target.accuracyMeters * 2.0)
+        return target.distanceMeters.takeIf { separation <= corridor }
+    }
+    val start = map(bounds.startMeters) ?: return null
+    val end = map(bounds.endMeters) ?: return null
+    return snapTrailBounds(start, end, newProfiles.map { it.distanceMeters }.sorted())
+}
+
 internal fun nearestRoutePoint(
     points: List<TrackPointEntity>,
     latitude: Double,
@@ -228,46 +330,82 @@ private fun nearestDistance(sortedDistances: List<Double>, target: Double): Doub
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrailBoundaryEditor(
-    trailId: Long,
+    trailId: Long?,
     trailName: String,
-    profiles: List<SpatialProfileEntity>,
-    passes: List<TrailPassEntity>,
+    referenceRides: List<RideEntity>,
+    initialReferenceRideId: Long,
+    initialProfiles: List<SpatialProfileEntity>,
     initialStartMeters: Double,
     initialEndMeters: Double,
     imperial: Boolean,
     apiKey: String,
     mapStyle: MapStyle,
-    allowNameEdit: Boolean,
     onDismiss: () -> Unit,
-    onSave: (name: String, startMeters: Double, endMeters: Double) -> Unit,
+    onLoadProfiles: suspend (Long) -> List<SpatialProfileEntity>,
+    onPreview: suspend (TrailDefinitionDraft) -> TrailEditImpact,
+    onSave: suspend (TrailDefinitionDraft, Set<String>) -> Long,
+    onApplied: (Long) -> Unit,
 ) {
-    val sortedProfiles = remember(profiles) { profiles.sortedBy { it.distanceMeters } }
+    val editorKey = trailId ?: -initialReferenceRideId
+    val scope = rememberCoroutineScope()
+    var referenceRideId by rememberSaveable(editorKey) { mutableLongStateOf(initialReferenceRideId) }
+    var sortedProfiles by remember(editorKey) { mutableStateOf(initialProfiles.sortedBy { it.distanceMeters }) }
+    var loadedReferenceRideId by remember(editorKey) {
+        mutableStateOf(initialReferenceRideId.takeIf { initialProfiles.isNotEmpty() })
+    }
+    var loadingProfiles by remember(editorKey) { mutableStateOf(initialProfiles.isEmpty()) }
+    var working by remember(editorKey) { mutableStateOf(false) }
+    var errorMessage by remember(editorKey) { mutableStateOf<String?>(null) }
+    var impact by remember(editorKey) { mutableStateOf<TrailEditImpact?>(null) }
+    var referenceMenuExpanded by remember { mutableStateOf(false) }
     val distances = remember(sortedProfiles) { sortedProfiles.map { it.distanceMeters } }
-    val initialBounds = remember(distances, initialStartMeters, initialEndMeters) {
-        snapTrailBounds(initialStartMeters, initialEndMeters, distances)
+    val startingBounds = remember(editorKey) {
+        snapTrailBounds(
+            initialStartMeters,
+            initialEndMeters,
+            initialProfiles.map { it.distanceMeters }.sorted(),
+        )
     }
-    var name by rememberSaveable(trailId) { mutableStateOf(trailName) }
-    var bounds by rememberSaveable(trailId, stateSaver = TrailBoundsSaver) {
-        mutableStateOf(initialBounds ?: TrailBounds(initialStartMeters, initialEndMeters))
+    var name by rememberSaveable(editorKey) { mutableStateOf(trailName) }
+    var bounds by rememberSaveable(editorKey, stateSaver = TrailBoundsSaver) {
+        mutableStateOf(startingBounds ?: TrailBounds(initialStartMeters, initialEndMeters))
     }
+    var resetBounds by remember(editorKey) { mutableStateOf(startingBounds) }
 
-    LaunchedEffect(initialBounds) {
-        initialBounds?.let { bounds = it }
+    LaunchedEffect(referenceRideId) {
+        if (referenceRideId == loadedReferenceRideId && sortedProfiles.isNotEmpty()) {
+            loadingProfiles = false
+            return@LaunchedEffect
+        }
+        loadingProfiles = true
+        errorMessage = null
+        val previousProfiles = sortedProfiles
+        val previousBounds = bounds
+        runCatching { onLoadProfiles(referenceRideId).sortedBy { it.distanceMeters } }
+            .onSuccess { loaded ->
+                if (loaded.size < 2) {
+                    errorMessage = "This ride has not finished processing its GPS route."
+                } else {
+                    sortedProfiles = loaded
+                    loadedReferenceRideId = referenceRideId
+                    val loadedBounds = remapTrailBounds(previousBounds, previousProfiles, loaded)
+                        ?: TrailBounds(loaded.first().distanceMeters, loaded.last().distanceMeters)
+                    bounds = loadedBounds
+                    resetBounds = loadedBounds
+                }
+            }
+            .onFailure { errorMessage = it.message ?: "Unable to load this route." }
+        loadingProfiles = false
     }
 
     val allMapPoints = remember(sortedProfiles) { sortedProfiles.map(SpatialProfileEntity::asTrackPoint) }
     val selectedProfiles = remember(sortedProfiles, bounds) { profilesWithinBounds(sortedProfiles, bounds) }
     val selectedMapPoints = remember(selectedProfiles) { selectedProfiles.map(SpatialProfileEntity::asTrackPoint) }
-    val coveredRideCount = remember(passes, bounds) {
-        passes.count { pass ->
-            pass.startMeters <= bounds.startMeters + COVERAGE_TOLERANCE_METERS &&
-                pass.endMeters >= bounds.endMeters - COVERAGE_TOLERANCE_METERS
-        }
-    }
-    val canSave = initialBounds != null && bounds.lengthMeters >= MINIMUM_TRAIL_LENGTH_METERS && name.isNotBlank()
+    val canSave = sortedProfiles.size >= 2 && bounds.lengthMeters >= MINIMUM_TRAIL_LENGTH_METERS &&
+        name.isNotBlank() && referenceRideId == loadedReferenceRideId && !loadingProfiles && !working
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!working) onDismiss() },
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -275,7 +413,7 @@ fun TrailBoundaryEditor(
                 TopAppBar(
                     title = { Text("Fine-tune trail") },
                     navigationIcon = {
-                        IconButton(onClick = onDismiss) {
+                        IconButton(onClick = onDismiss, enabled = !working) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close trail editor")
                         }
                     },
@@ -327,14 +465,40 @@ fun TrailBoundaryEditor(
                             .padding(horizontal = 20.dp, vertical = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        if (allowNameEdit) {
-                            OutlinedTextField(
-                                value = name,
-                                onValueChange = { name = it.take(80) },
+                        OutlinedTextField(
+                            value = name,
+                            onValueChange = { name = it.take(80) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Trail name") },
+                            singleLine = true,
+                        )
+
+                        Box(Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { referenceMenuExpanded = true },
+                                enabled = !working,
                                 modifier = Modifier.fillMaxWidth(),
-                                label = { Text("Trail name") },
-                                singleLine = true,
-                            )
+                            ) {
+                                Icon(Icons.Default.Route, null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Reference: ${rideLabel(referenceRides.firstOrNull { it.id == referenceRideId }, referenceRideId, imperial)}")
+                                Spacer(Modifier.weight(1f))
+                                Icon(Icons.Default.ArrowDropDown, null)
+                            }
+                            DropdownMenu(
+                                expanded = referenceMenuExpanded,
+                                onDismissRequest = { referenceMenuExpanded = false },
+                            ) {
+                                referenceRides.distinctBy { it.id }.forEach { ride ->
+                                    DropdownMenuItem(
+                                        text = { Text(rideLabel(ride, ride.id, imperial)) },
+                                        onClick = {
+                                            referenceMenuExpanded = false
+                                            if (ride.id != referenceRideId) referenceRideId = ride.id
+                                        },
+                                    )
+                                }
+                            }
                         }
 
                         Row(
@@ -345,8 +509,7 @@ fun TrailBoundaryEditor(
                             Column {
                                 Text("Start to finish", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                                 Text(
-                                    "${formatBoundaryDistance(bounds.lengthMeters, imperial)} · " +
-                                        "$coveredRideCount ${if (coveredRideCount == 1) "ride" else "rides"} cover this selection",
+                                    formatBoundaryDistance(bounds.lengthMeters, imperial),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
@@ -375,22 +538,61 @@ fun TrailBoundaryEditor(
                             )
                         }
 
+                        errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+
                         Button(
-                            onClick = { onSave(name.trim(), bounds.startMeters, bounds.endMeters) },
+                            onClick = {
+                                scope.launch {
+                                    working = true
+                                    errorMessage = null
+                                    val draft = TrailDefinitionDraft(
+                                        trailId = trailId,
+                                        name = name,
+                                        referenceRideId = referenceRideId,
+                                        startMeters = bounds.startMeters,
+                                        endMeters = bounds.endMeters,
+                                    )
+                                    runCatching { onPreview(draft) }
+                                        .onSuccess { impact = it }
+                                        .onFailure { errorMessage = it.message ?: "Unable to preview this change." }
+                                    working = false
+                                }
+                            },
                             enabled = canSave,
                             modifier = Modifier.fillMaxWidth().height(56.dp),
-                        ) { Text("Save trail", fontWeight = FontWeight.Bold) }
+                        ) {
+                            if (working) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                            else Text("Review changes", fontWeight = FontWeight.Bold)
+                        }
 
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                             TextButton(
-                                onClick = { initialBounds?.let { bounds = it } },
-                                enabled = initialBounds != null && bounds != initialBounds,
+                                onClick = { resetBounds?.let { bounds = it } },
+                                enabled = resetBounds != null && bounds != resetBounds,
                             ) { Text("Reset") }
                         }
                     }
                 }
             }
         }
+    }
+    impact?.let { preview ->
+        TrailImpactDialog(
+            impact = preview,
+            working = working,
+            errorMessage = errorMessage,
+            onDismiss = { if (!working) impact = null },
+            onConfirm = {
+                scope.launch {
+                    working = true
+                    errorMessage = null
+                    runCatching { onSave(preview.draft, preview.removedItems.mapTo(hashSetOf()) { it.key }) }
+                        .onSuccess { id -> impact = null; onApplied(id) }
+                        .onFailure { errorMessage = it.message ?: "Unable to save this trail." }
+                    working = false
+                }
+            },
+        )
     }
 }
 

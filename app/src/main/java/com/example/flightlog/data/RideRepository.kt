@@ -6,8 +6,16 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import com.example.flightlog.tracking.JumpMotionTrace
 import com.example.flightlog.tracking.MotionSample
+import com.example.flightlog.tracking.TrailAnalysis
+import androidx.room.withTransaction
+import com.example.flightlog.domain.PauseZoneState
+import com.example.flightlog.domain.SectionKind
+import com.example.flightlog.domain.TrailState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-class RideRepository(private val dao: FlightLogDao) {
+class RideRepository(private val database: FlightLogDatabase) {
+    private val dao = database.dao()
     val rides: Flow<List<RideEntity>> = dao.observeRides()
     val jumps: Flow<List<JumpEventEntity>> = dao.observeJumps()
     val trails: Flow<List<TrailEntity>> = dao.observeVisibleTrails()
@@ -34,6 +42,7 @@ class RideRepository(private val dao: FlightLogDao) {
     suspend fun ride(id: Long) = dao.ride(id)
     suspend fun pointSnapshot(id: Long) = compactedPoints(id)
     suspend fun spatialProfiles(rideId: Long) = dao.spatialProfiles(rideId)
+    suspend fun trailPasses(trailId: Long) = dao.passes(trailId)
     fun observeSpatialProfiles(rideId: Long) = dao.observeSpatialProfiles(rideId)
     suspend fun jumpSnapshot(id: Long) = dao.jumps(id)
     suspend fun deleteRide(id: Long): Boolean = dao.deleteFinishedRide(id) > 0
@@ -87,19 +96,128 @@ class RideRepository(private val dao: FlightLogDao) {
             .sortedBy { it.recordedAt }
     }
 
-    suspend fun confirmTrail(id: Long, name: String, startMeters: Double, endMeters: Double) {
-        val trail = dao.allTrails().firstOrNull { it.id == id } ?: return
-        if (startMeters < 0.0 || startMeters >= endMeters || endMeters > trail.lengthMeters) return
-        dao.updateTrail(trail.copy(
-            name = name.trim().take(80).ifBlank { trail.name },
-            startMeters = startMeters,
-            endMeters = endMeters,
-            state = com.example.flightlog.domain.TrailState.CONFIRMED,
-            updatedAt = System.currentTimeMillis(),
-        ))
-        dao.sections(id).firstOrNull { it.kind == com.example.flightlog.domain.SectionKind.WHOLE_TRAIL }?.let {
-            dao.updateSection(it.copy(startMeters = startMeters, endMeters = endMeters))
+    suspend fun previewTrailDefinition(draft: TrailDefinitionDraft): TrailEditImpact {
+        val validated = validateTrailDraft(draft)
+        val trail = validated.trailId?.let { id -> dao.allTrails().firstOrNull { it.id == id } }
+        require(validated.trailId == null || trail != null) { "Trail no longer exists" }
+        val rides = dao.allRides()
+        val profilesByRide = rides.associate { it.id to dao.spatialProfiles(it.id) }
+        val (matched, complete) = withContext(Dispatchers.Default) {
+            projectedTrailCoverage(rides, profilesByRide, validated)
         }
+        val priorPasses = trail?.let { dao.passes(it.id) }.orEmpty()
+        val remapped = if (trail == null) {
+            RemappedTrailItems(emptyList(), emptyList())
+        } else {
+            remapTrailItems(
+                validated,
+                trail.canonicalRideId,
+                profilesByRide[trail.canonicalRideId].orEmpty(),
+                profilesByRide[validated.referenceRideId].orEmpty(),
+                dao.sections(trail.id),
+                dao.pauseZones(trail.id),
+            )
+        }
+        return TrailEditImpact(
+            draft = validated,
+            previousMatchedRideCount = priorPasses.map { it.rideId }.distinct().size,
+            previousCompleteRideCount = priorPasses.filter { it.completeCoverage }.map { it.rideId }.distinct().size,
+            matchedRideCount = matched,
+            completeRideCount = complete,
+            preservedItems = remapped.preserved,
+            removedItems = remapped.removed,
+        )
+    }
+
+    suspend fun saveTrailDefinition(draft: TrailDefinitionDraft, confirmedRemovalKeys: Set<String>): Long {
+        val impact = previewTrailDefinition(draft)
+        val requiredRemovals = impact.removedItems.mapTo(hashSetOf()) { it.key }
+        require(requiredRemovals.all(confirmedRemovalKeys::contains)) { "Review affected custom items before saving" }
+        val canonical = dao.spatialProfiles(impact.draft.referenceRideId)
+        require(canonical.size >= 2) { "The reference ride route is no longer available" }
+        val now = System.currentTimeMillis()
+        return database.withTransaction {
+            val trailId = impact.draft.trailId
+            if (trailId == null) {
+                val id = dao.insertTrail(TrailEntity(
+                    name = impact.draft.name,
+                    state = TrailState.CONFIRMED,
+                    canonicalRideId = impact.draft.referenceRideId,
+                    lengthMeters = canonical.last().distanceMeters,
+                    startMeters = impact.draft.startMeters,
+                    endMeters = impact.draft.endMeters,
+                    supportCount = impact.matchedRideCount.coerceAtLeast(1),
+                    updatedAt = now,
+                ))
+                TrailAnalysis.suggestedSections(id, canonical.filter {
+                    it.distanceMeters in impact.draft.startMeters..impact.draft.endMeters
+                }).forEach { dao.insertSection(it) }
+                id
+            } else {
+                val trail = dao.allTrails().firstOrNull { it.id == trailId }
+                    ?: error("Trail no longer exists")
+                dao.updateTrail(trail.copy(
+                    name = impact.draft.name,
+                    state = TrailState.CONFIRMED,
+                    canonicalRideId = impact.draft.referenceRideId,
+                    lengthMeters = canonical.last().distanceMeters,
+                    startMeters = impact.draft.startMeters,
+                    endMeters = impact.draft.endMeters,
+                    supportCount = impact.matchedRideCount.coerceAtLeast(1),
+                    updatedAt = now,
+                ))
+                val sections = dao.sections(trailId)
+                val pauseZones = dao.pauseZones(trailId)
+                sections.firstOrNull { it.kind == SectionKind.WHOLE_TRAIL }?.let {
+                    dao.updateSection(it.copy(startMeters = impact.draft.startMeters, endMeters = impact.draft.endMeters))
+                } ?: dao.insertSection(TrailSectionEntity(
+                    trailId = trailId,
+                    name = "Whole trail",
+                    kind = SectionKind.WHOLE_TRAIL,
+                    state = com.example.flightlog.domain.SectionState.CONFIRMED,
+                    startMeters = impact.draft.startMeters,
+                    endMeters = impact.draft.endMeters,
+                ))
+                impact.preservedItems.forEach { item ->
+                    when (item.kind) {
+                        TrailCustomItemKind.SECTION -> sections.firstOrNull { "section:${it.id}" == item.key }?.let {
+                            dao.updateSection(it.copy(startMeters = item.startMeters, endMeters = item.endMeters))
+                        }
+                        TrailCustomItemKind.PAUSE_ZONE -> pauseZones.firstOrNull { "pause:${it.id}" == item.key }?.let {
+                                dao.updatePauseZone(it.copy(
+                                    startMeters = item.startMeters,
+                                    endMeters = item.endMeters,
+                                    updatedAt = now,
+                                ))
+                            }
+                    }
+                }
+                impact.removedItems.forEach { item ->
+                    val id = item.key.substringAfter(':').toLong()
+                    when (item.kind) {
+                        TrailCustomItemKind.SECTION -> dao.deleteSection(id)
+                        TrailCustomItemKind.PAUSE_ZONE -> dao.deletePauseZone(id)
+                    }
+                }
+                dao.deleteAutoSections(trailId)
+                dao.deleteGeneratedPauseZones(trailId)
+                TrailAnalysis.suggestedSections(trailId, canonical.filter {
+                    it.distanceMeters in impact.draft.startMeters..impact.draft.endMeters
+                }).filter { it.kind != SectionKind.WHOLE_TRAIL }.forEach { dao.insertSection(it) }
+                trailId
+            }
+        }
+    }
+
+    private suspend fun validateTrailDraft(draft: TrailDefinitionDraft): TrailDefinitionDraft {
+        val profiles = dao.spatialProfiles(draft.referenceRideId).sortedBy { it.distanceMeters }
+        require(profiles.size >= 2) { "This ride has not finished processing its GPS route" }
+        val start = draft.startMeters
+        val end = draft.endMeters
+        require(start.isFinite() && end.isFinite() && start >= profiles.first().distanceMeters &&
+            end <= profiles.last().distanceMeters && end - start >= 10.0
+        ) { "Choose trail boundaries at least 10 m apart" }
+        return draft.copy(name = draft.name.trim().take(80).ifBlank { "New trail" })
     }
 
     suspend fun confirmSection(id: Long) {

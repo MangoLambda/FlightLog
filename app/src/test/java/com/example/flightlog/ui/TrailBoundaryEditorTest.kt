@@ -38,6 +38,24 @@ class TrailBoundaryEditorTest {
         assertEquals(2_000L, nearestRoutePoint(route, 45.5012, -73.5001)?.recordedAt)
     }
 
+    @Test fun replacingReferenceRideMapsBoundariesByGpsLocation() {
+        val previous = distances.mapIndexed { index, distance ->
+            profile(distance, null).copy(latitude = 45.0 + index * .0001)
+        }
+        val replacement = distances.mapIndexed { index, distance ->
+            profile(distance + 100.0, null).copy(
+                rideId = 2,
+                distanceBin = index,
+                latitude = 45.0 + index * .0001,
+            )
+        }
+
+        assertEquals(
+            TrailBounds(120.0, 180.0),
+            remapTrailBounds(TrailBounds(20.0, 80.0), previous, replacement),
+        )
+    }
+
     @Test fun elevationProfileUsesAltitudeAndDrawsHigherValuesUpward() {
         val profiles = listOf(
             profile(distance = 0.0, altitude = 100.0),

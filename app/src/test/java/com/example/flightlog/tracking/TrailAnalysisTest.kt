@@ -61,6 +61,30 @@ class TrailAnalysisTest {
         assertNull(TrailAnalysis.match(repeated.reversed(), canonical))
     }
 
+    @Test fun matchesASelectedConnectorWhoseDistancesDoNotStartAtZero() {
+        val fullCanonical = profileLine(rideId = 1, count = 120)
+        val connector = fullCanonical.filter { it.distanceMeters in 300.0..450.0 }
+        val candidate = connector.map { it.copy(rideId = 2) }
+
+        assertNotNull(TrailAnalysis.match(candidate, connector))
+    }
+
+    @Test fun fullCoverageRequiresContinuousSelectedGeometry() {
+        val canonical = profileLine(rideId = 1, count = 80)
+        val complete = profileLine(rideId = 2, count = 80).zip(canonical)
+        val forked = complete.filterIndexed { index, _ -> index !in 30..36 }
+
+        assertTrue(TrailAnalysis.hasContinuousRangeCoverage(complete, 25.0, 350.0))
+        assertFalse(TrailAnalysis.hasContinuousRangeCoverage(forked, 25.0, 350.0))
+    }
+
+    @Test fun partialRideDoesNotQualifyAsACompleteRun() {
+        val canonical = profileLine(rideId = 1, count = 80)
+        val partial = profileLine(rideId = 2, count = 40).zip(canonical.take(40))
+
+        assertFalse(TrailAnalysis.hasContinuousRangeCoverage(partial, 25.0, 350.0))
+    }
+
     @Test fun interruptedSectionIsInvalidButNeighborCanRemainValid() {
         val canonical = profileLine(rideId = 1, count = 80)
         val candidate = profileLine(rideId = 2, count = 80).mapIndexed { index, point ->

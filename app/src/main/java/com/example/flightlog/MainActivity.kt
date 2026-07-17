@@ -63,6 +63,8 @@ import com.example.flightlog.data.SectionEffortEntity
 import com.example.flightlog.data.TrackPointEntity
 import com.example.flightlog.data.StopEventEntity
 import com.example.flightlog.data.TrailPauseZoneEntity
+import com.example.flightlog.data.TrailDefinitionDraft
+import com.example.flightlog.data.TrailEditImpact
 import com.example.flightlog.domain.AggregatePeriod
 import com.example.flightlog.domain.EffortInvalidReason
 import com.example.flightlog.domain.JumpStatus
@@ -356,6 +358,9 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onDelete = { selectedRideId?.let(vm::deleteRide) },
                         deletesReferencedTrail = trails.any { it.canonicalRideId == selectedRideId },
                         onConfigureMap = openMapSettings,
+                        onLoadTrailProfiles = vm::trailProfiles,
+                        onPreviewTrail = vm::previewTrailDefinition,
+                        onSaveTrail = vm::saveTrailDefinition,
                     )
                     AppScreen.JUMP_DETAIL -> JumpDetailScreen(
                         jump = selectedJumps.firstOrNull { it.id == selectedJumpId },
@@ -387,7 +392,9 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onBack = { vm.screen.value = AppScreen.TRAILS },
                         onPassA = { vm.selectedPassAId.value = it },
                         onPassB = { vm.selectedPassBId.value = it },
-                        onConfirmTrail = vm::confirmTrail,
+                        onLoadTrailProfiles = vm::trailProfiles,
+                        onPreviewTrail = vm::previewTrailDefinition,
+                        onSaveTrail = vm::saveTrailDefinition,
                         onAddSection = vm::addManualSection,
                         onUpdateSection = vm::updateSection,
                         onSavePauseZones = vm::savePauseZones,
@@ -653,6 +660,9 @@ private fun ReviewScreen(
     onDelete: () -> Unit,
     deletesReferencedTrail: Boolean,
     onConfigureMap: () -> Unit,
+    onLoadTrailProfiles: suspend (Long) -> List<SpatialProfileEntity>,
+    onPreviewTrail: suspend (TrailDefinitionDraft) -> TrailEditImpact,
+    onSaveTrail: suspend (TrailDefinitionDraft, Set<String>) -> Long,
 ) {
     if (ride == null) { EmptyCard("Ride unavailable", "This ride could not be loaded."); return }
     val numbers = remember(jumps) { jumpNumbers(jumps) }
@@ -663,6 +673,26 @@ private fun ReviewScreen(
         if (index >= 0) jumpListState.animateScrollToItem(1 + (if (pendingCount > 0) 1 else 0) + index)
     }
     var confirmingDelete by rememberSaveable(ride.id) { mutableStateOf(false) }
+    var creatingTrail by rememberSaveable(ride.id) { mutableStateOf(false) }
+    if (creatingTrail) {
+        TrailBoundaryEditor(
+            trailId = null,
+            trailName = "New trail",
+            referenceRides = listOf(ride),
+            initialReferenceRideId = ride.id,
+            initialProfiles = emptyList(),
+            initialStartMeters = 0.0,
+            initialEndMeters = ride.distanceMeters,
+            imperial = imperial,
+            apiKey = mapApiKey,
+            mapStyle = mapStyle,
+            onDismiss = { creatingTrail = false },
+            onLoadProfiles = onLoadTrailProfiles,
+            onPreview = onPreviewTrail,
+            onSave = onSaveTrail,
+            onApplied = { creatingTrail = false },
+        )
+    }
     if (confirmingDelete) {
         AlertDialog(
             onDismissRequest = { confirmingDelete = false },
@@ -691,6 +721,10 @@ private fun ReviewScreen(
             title = { Text("Review ride") },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             actions = {
+                IconButton(
+                    onClick = { creatingTrail = true },
+                    enabled = points.isNotEmpty() && ride.state != RideState.RECORDING && ride.state != RideState.PAUSED,
+                ) { Icon(Icons.Default.Route, "Create trail from this ride") }
                 IconButton(onClick = onShare) { Icon(Icons.Default.Share, "Export GPX and CSV") }
                 IconButton(onClick = { confirmingDelete = true }) { Icon(Icons.Default.Delete, "Delete ride") }
             },
@@ -1072,7 +1106,9 @@ private fun TrailDetailScreen(
     canonicalProfiles: List<SpatialProfileEntity>, pauseZones: List<TrailPauseZoneEntity>,
     imperial: Boolean, mapApiKey: String, mapStyle: MapStyle, onBack: () -> Unit,
     onPassA: (Long) -> Unit, onPassB: (Long) -> Unit,
-    onConfirmTrail: (Long, String, Double, Double) -> Unit,
+    onLoadTrailProfiles: suspend (Long) -> List<SpatialProfileEntity>,
+    onPreviewTrail: suspend (TrailDefinitionDraft) -> TrailEditImpact,
+    onSaveTrail: suspend (TrailDefinitionDraft, Set<String>) -> Long,
     onAddSection: (Long, String, Double, Double) -> Unit,
     onUpdateSection: (Long, String, Double, Double) -> Unit,
     onSavePauseZones: (Long, List<com.example.flightlog.ui.PauseZoneDraft>) -> Unit,
@@ -1148,22 +1184,23 @@ private fun TrailDetailScreen(
         )
     }
     if (showingBoundaryEditor) {
+        val referenceRideIds = passes.mapTo(linkedSetOf(trail.canonicalRideId)) { it.rideId }
         TrailBoundaryEditor(
             trailId = trail.id,
             trailName = trail.name,
-            profiles = canonicalProfiles,
-            passes = passes,
+            referenceRides = rides.filter { it.id in referenceRideIds },
+            initialReferenceRideId = trail.canonicalRideId,
+            initialProfiles = canonicalProfiles,
             initialStartMeters = trail.startMeters,
             initialEndMeters = trail.endMeters,
             imperial = imperial,
             apiKey = mapApiKey,
             mapStyle = mapStyle,
-            allowNameEdit = trail.state == TrailState.SUGGESTED,
             onDismiss = { showingBoundaryEditor = false },
-            onSave = { name, start, end ->
-                onConfirmTrail(trail.id, name, start, end)
-                showingBoundaryEditor = false
-            },
+            onLoadProfiles = onLoadTrailProfiles,
+            onPreview = onPreviewTrail,
+            onSave = onSaveTrail,
+            onApplied = { showingBoundaryEditor = false },
         )
     }
     if (showingSplitEditor) {
@@ -1249,6 +1286,7 @@ private fun TrailDetailScreen(
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             actions = {
                 if (passes.size >= 2) IconButton(onClick = { addingSection = true }) { Icon(Icons.Default.Add, "Add section") }
+                IconButton(onClick = { showingBoundaryEditor = true }) { Icon(Icons.Default.Edit, "Edit trail") }
             },
             colors = flightLogTopAppBarColors(),
             windowInsets = WindowInsets(0, 0, 0, 0),

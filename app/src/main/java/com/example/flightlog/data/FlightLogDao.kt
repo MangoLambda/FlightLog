@@ -197,6 +197,12 @@ interface FlightLogDao {
     @Query("DELETE FROM trail_sections WHERE id = :sectionId")
     suspend fun deleteSection(sectionId: Long)
 
+    @Query("DELETE FROM trail_pause_zones WHERE id = :pauseZoneId")
+    suspend fun deletePauseZone(pauseZoneId: Long)
+
+    @Query("DELETE FROM trail_pause_zones WHERE trailId = :trailId AND state NOT IN ('USER_LOCKED', 'DISMISSED')")
+    suspend fun deleteGeneratedPauseZones(trailId: Long)
+
     @Query("DELETE FROM rides WHERE id = :rideId AND state NOT IN ('RECORDING', 'PAUSED')")
     suspend fun deleteFinishedRide(rideId: Long): Int
 
