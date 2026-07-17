@@ -1,6 +1,7 @@
 package com.example.flightlog.data
 
 import com.example.flightlog.domain.PauseZoneState
+import com.example.flightlog.domain.RideState
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.tracking.RideMath
 import com.example.flightlog.tracking.TrailAnalysis
@@ -32,6 +33,36 @@ data class TrailEditImpact(
     val completeRideCount: Int,
     val preservedItems: List<TrailCustomItemChange>,
     val removedItems: List<TrailCustomItemChange>,
+)
+
+data class TrailReassignmentPreview(
+    val trailId: Long,
+    val trailName: String,
+    val previousReferenceRideId: Long,
+    val replacementRideId: Long,
+    val draft: TrailDefinitionDraft,
+    val removedItems: List<TrailCustomItemChange>,
+)
+
+data class TrailDeletionPreview(
+    val trailId: Long,
+    val trailName: String,
+)
+
+data class BulkRideDeletePreview(
+    val rideIds: Set<Long>,
+    val reassignments: List<TrailReassignmentPreview>,
+    val deletedTrails: List<TrailDeletionPreview>,
+    val retainedTrailIdsToRebuild: Set<Long>,
+) {
+    val removedCustomItems: List<TrailCustomItemChange>
+        get() = reassignments.flatMap { it.removedItems }
+}
+
+data class BulkRideDeleteResult(
+    val deletedRideCount: Int,
+    val reassignedTrailCount: Int,
+    val deletedTrailCount: Int,
 )
 
 internal data class RemappedTrailItems(
@@ -118,6 +149,17 @@ private fun mapDistance(
     return target.distanceMeters.takeIf { separation <= corridor }
 }
 
+internal fun remapTrailRange(
+    startMeters: Double,
+    endMeters: Double,
+    previousProfiles: List<SpatialProfileEntity>,
+    newProfiles: List<SpatialProfileEntity>,
+): Pair<Double, Double>? {
+    val start = mapDistance(startMeters, previousProfiles, newProfiles) ?: return null
+    val end = mapDistance(endMeters, previousProfiles, newProfiles) ?: return null
+    return (start to end).takeIf { end - start >= 10.0 }
+}
+
 private fun coordinateDistanceMeters(a: SpatialProfileEntity, b: SpatialProfileEntity): Double =
     RideMath.distanceMeters(
         LocationSample(0, a.latitude, a.longitude, a.accuracyMeters, 0.0),
@@ -144,4 +186,82 @@ internal fun projectedTrailCoverage(
         if (TrailAnalysis.hasContinuousRangeCoverage(match.normalized, draft.startMeters, draft.endMeters)) complete++
     }
     return matched to complete
+}
+
+internal fun buildBulkRideDeletePreview(
+    selectedRideIds: Set<Long>,
+    rides: List<RideEntity>,
+    trails: List<TrailEntity>,
+    passesByTrail: Map<Long, List<TrailPassEntity>>,
+    profilesByRide: Map<Long, List<SpatialProfileEntity>>,
+    sectionsByTrail: Map<Long, List<TrailSectionEntity>>,
+    pauseZonesByTrail: Map<Long, List<TrailPauseZoneEntity>>,
+): BulkRideDeletePreview {
+    require(selectedRideIds.isNotEmpty()) { "Select at least one ride" }
+    val ridesById = rides.associateBy { it.id }
+    require(selectedRideIds.all { id ->
+        ridesById[id]?.state?.let { it != RideState.RECORDING && it != RideState.PAUSED } == true
+    }) { "Some selected rides can no longer be deleted" }
+
+    val reassignments = mutableListOf<TrailReassignmentPreview>()
+    val deletedTrails = mutableListOf<TrailDeletionPreview>()
+    trails.filter { it.canonicalRideId in selectedRideIds }.sortedBy { it.id }.forEach { trail ->
+        val previousProfiles = profilesByRide[trail.canonicalRideId].orEmpty()
+        val replacement = passesByTrail[trail.id].orEmpty().asSequence()
+            .filter { pass ->
+                pass.rideId !in selectedRideIds && pass.completeCoverage && !pass.interrupted && !pass.hasReversal &&
+                    ridesById[pass.rideId]?.state?.let { it != RideState.RECORDING && it != RideState.PAUSED } == true
+            }
+            .sortedWith(compareByDescending<TrailPassEntity> { it.matchConfidence }.thenByDescending { it.startedAt })
+            .mapNotNull { pass ->
+                val newProfiles = profilesByRide[pass.rideId].orEmpty()
+                val mappedBounds = remapTrailRange(
+                    trail.startMeters, trail.endMeters, previousProfiles, newProfiles,
+                ) ?: return@mapNotNull null
+                val draft = TrailDefinitionDraft(
+                    trailId = trail.id,
+                    name = trail.name,
+                    referenceRideId = pass.rideId,
+                    startMeters = mappedBounds.first,
+                    endMeters = mappedBounds.second,
+                )
+                val items = remapTrailItems(
+                    draft = draft,
+                    previousReferenceRideId = trail.canonicalRideId,
+                    previousProfiles = previousProfiles,
+                    newProfiles = newProfiles,
+                    sections = sectionsByTrail[trail.id].orEmpty(),
+                    pauseZones = pauseZonesByTrail[trail.id].orEmpty(),
+                )
+                TrailReassignmentPreview(
+                    trailId = trail.id,
+                    trailName = trail.name,
+                    previousReferenceRideId = trail.canonicalRideId,
+                    replacementRideId = pass.rideId,
+                    draft = draft,
+                    removedItems = items.removed,
+                )
+            }
+            .firstOrNull()
+        if (replacement == null) {
+            deletedTrails += TrailDeletionPreview(trail.id, trail.name)
+        } else {
+            reassignments += replacement
+        }
+    }
+    val deletedTrailIds = deletedTrails.mapTo(hashSetOf()) { it.trailId }
+    val retainedTrailIdsToRebuild = trails.asSequence()
+        .filter { it.id !in deletedTrailIds }
+        .filter { trail ->
+            reassignments.any { it.trailId == trail.id } ||
+                passesByTrail[trail.id].orEmpty().any { it.rideId in selectedRideIds }
+        }
+        .map { it.id }
+        .toSortedSet()
+    return BulkRideDeletePreview(
+        rideIds = selectedRideIds.toSortedSet(),
+        reassignments = reassignments,
+        deletedTrails = deletedTrails,
+        retainedTrailIdsToRebuild = retainedTrailIdsToRebuild,
+    )
 }

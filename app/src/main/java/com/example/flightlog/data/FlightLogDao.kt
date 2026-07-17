@@ -206,6 +206,9 @@ interface FlightLogDao {
     @Query("DELETE FROM rides WHERE id = :rideId AND state NOT IN ('RECORDING', 'PAUSED')")
     suspend fun deleteFinishedRide(rideId: Long): Int
 
+    @Query("DELETE FROM rides WHERE id IN (:rideIds) AND state NOT IN ('RECORDING', 'PAUSED')")
+    suspend fun deleteFinishedRides(rideIds: List<Long>): Int
+
     @Query("DELETE FROM telemetry_chunks WHERE rideId = :rideId AND kind = 'MOTION'")
     suspend fun deleteMotionForRide(rideId: Long): Int
 

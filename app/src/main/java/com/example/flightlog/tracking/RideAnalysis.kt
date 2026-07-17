@@ -530,6 +530,7 @@ class RideProcessor(private val database: FlightLogDatabase) {
             syncSplitSections(trail)
             dao.deletePassesForTrail(trailId)
             rides.forEach { createMatchedPasses(trail, canonical, it, includeEfforts = true) }
+            dao.updateTrail(trail.copy(supportCount = dao.passes(trailId).map { it.rideId }.distinct().size))
         }
     }
 

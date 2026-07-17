@@ -47,6 +47,53 @@ class RideRepository(private val database: FlightLogDatabase) {
     suspend fun jumpSnapshot(id: Long) = dao.jumps(id)
     suspend fun deleteRide(id: Long): Boolean = dao.deleteFinishedRide(id) > 0
 
+    suspend fun previewBulkRideDeletion(rideIds: Set<Long>): BulkRideDeletePreview {
+        val rides = dao.allRides()
+        val trails = dao.allTrails()
+        val passesByTrail = dao.allPasses().groupBy { it.trailId }
+        val sectionsByTrail = dao.allSections().groupBy { it.trailId }
+        val pauseZonesByTrail = dao.allPauseZones().groupBy { it.trailId }
+        val affectedTrails = trails.filter { it.canonicalRideId in rideIds }
+        val profileRideIds = buildSet {
+            affectedTrails.forEach { trail ->
+                add(trail.canonicalRideId)
+                passesByTrail[trail.id].orEmpty().forEach { add(it.rideId) }
+            }
+        }
+        val profilesByRide = profileRideIds.associateWith { dao.spatialProfiles(it) }
+        return withContext(Dispatchers.Default) {
+            buildBulkRideDeletePreview(
+                selectedRideIds = rideIds,
+                rides = rides,
+                trails = trails,
+                passesByTrail = passesByTrail,
+                profilesByRide = profilesByRide,
+                sectionsByTrail = sectionsByTrail,
+                pauseZonesByTrail = pauseZonesByTrail,
+            )
+        }
+    }
+
+    suspend fun applyBulkRideDeletion(preview: BulkRideDeletePreview): BulkRideDeleteResult {
+        val current = previewBulkRideDeletion(preview.rideIds)
+        require(current == preview) { "Ride or trail data changed; review the deletion again" }
+        return database.withTransaction {
+            current.reassignments.forEach { reassignment ->
+                saveTrailDefinition(
+                    reassignment.draft,
+                    reassignment.removedItems.mapTo(hashSetOf()) { it.key },
+                )
+            }
+            val deleted = dao.deleteFinishedRides(current.rideIds.toList())
+            check(deleted == current.rideIds.size) { "Not all selected rides could be deleted" }
+            BulkRideDeleteResult(
+                deletedRideCount = deleted,
+                reassignedTrailCount = current.reassignments.size,
+                deletedTrailCount = current.deletedTrails.size,
+            )
+        }
+    }
+
     suspend fun updatePauseZone(id: Long, name: String, startMeters: Double, endMeters: Double): Long? {
         val zone = dao.allPauseZones().firstOrNull { it.id == id } ?: return null
         val trail = dao.allTrails().firstOrNull { it.id == zone.trailId } ?: return null

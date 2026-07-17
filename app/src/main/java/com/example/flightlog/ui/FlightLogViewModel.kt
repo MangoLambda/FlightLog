@@ -17,6 +17,8 @@ import com.example.flightlog.data.TrailSectionEntity
 import com.example.flightlog.data.TrailPauseZoneEntity
 import com.example.flightlog.data.TrailDefinitionDraft
 import com.example.flightlog.data.TrailEditImpact
+import com.example.flightlog.data.BulkRideDeletePreview
+import com.example.flightlog.data.BulkRideDeleteResult
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.maps.MapApiKeyStore
@@ -130,6 +132,20 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
             if (selectedRideId.value == rideId) selectedRideId.value = null
             screen.value = AppScreen.HISTORY
         }
+    }
+
+    suspend fun previewBulkRideDeletion(rideIds: Set<Long>): BulkRideDeletePreview =
+        repository.previewBulkRideDeletion(rideIds)
+
+    suspend fun deleteRides(preview: BulkRideDeletePreview): BulkRideDeleteResult {
+        lateinit var result: BulkRideDeleteResult
+        app.database.withTransaction {
+            result = repository.applyBulkRideDeletion(preview)
+            preview.retainedTrailIdsToRebuild.forEach { app.rideProcessor.rebuildTrail(it) }
+        }
+        if (selectedRideId.value in preview.rideIds) selectedRideId.value = null
+        screen.value = AppScreen.HISTORY
+        return result
     }
 
     fun openTrail(trailId: Long) {

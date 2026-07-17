@@ -17,6 +17,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -65,6 +66,8 @@ import com.example.flightlog.data.StopEventEntity
 import com.example.flightlog.data.TrailPauseZoneEntity
 import com.example.flightlog.data.TrailDefinitionDraft
 import com.example.flightlog.data.TrailEditImpact
+import com.example.flightlog.data.BulkRideDeletePreview
+import com.example.flightlog.data.BulkRideDeleteResult
 import com.example.flightlog.domain.AggregatePeriod
 import com.example.flightlog.domain.EffortInvalidReason
 import com.example.flightlog.domain.JumpStatus
@@ -115,6 +118,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.abs
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -311,7 +315,13 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
             screenStateHolder.SaveableStateProvider(screenStateKey) {
                 when (screen) {
                     AppScreen.RIDE -> HomeScreen(rides, points, selectedJumps, imperial, recordingSettings, effectiveMapApiKey, mapStyle, startRide, openMapSettings)
-                    AppScreen.HISTORY -> HistoryScreen(rides, imperial, vm::openRide)
+                    AppScreen.HISTORY -> HistoryScreen(
+                        rides = rides,
+                        imperial = imperial,
+                        onRide = vm::openRide,
+                        onPreviewDelete = vm::previewBulkRideDeletion,
+                        onDelete = vm::deleteRides,
+                    )
                     AppScreen.TRAILS -> TrailsScreen(trails, sections, passes, efforts, imperial, vm::openTrail)
                     AppScreen.STATS -> StatsScreen(rides, jumps, imperial)
                     AppScreen.SETTINGS -> SettingsScreen(
@@ -620,22 +630,221 @@ private fun gpsStatusLabel(status: GpsStatus): String = when (status) {
     GpsStatus.ERROR -> "GPS ERROR"
 }
 
+internal fun toggleRideSelection(selected: Set<Long>, rideId: Long): Set<Long> =
+    if (rideId in selected) selected - rideId else selected + rideId
+
+internal fun toggleAllRideSelection(selected: Set<Long>, eligible: Set<Long>): Set<Long> =
+    if (eligible.isNotEmpty() && selected.containsAll(eligible)) emptySet() else eligible
+
 @Composable
-private fun HistoryScreen(rides: List<RideEntity>, imperial: Boolean, onRide: (Long) -> Unit) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("Ride history", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold) }
-        if (rides.isEmpty()) item { EmptyCard("No rides yet", "Record a ride to build your trail history.") }
-        items(rides, key = { it.id }) { ride ->
-            Card(onClick = { onRide(ride.id) }) {
-                Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Route, null, tint = TrailCyan, modifier = Modifier.size(36.dp))
-                    Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(formatDate(ride.startedAt), fontWeight = FontWeight.Bold)
-                        Text("${formatDistance(ride.distanceMeters, imperial)} • ${formatDuration(ride.movingTimeMillis)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun BulkRideDeleteDialog(
+    preview: BulkRideDeletePreview,
+    working: Boolean,
+    errorMessage: String?,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = { if (!working) onDismiss() },
+        icon = { Icon(Icons.Default.DeleteForever, null, tint = MaterialTheme.colorScheme.error) },
+        title = { Text("Delete ${preview.rideIds.size} ${if (preview.rideIds.size == 1) "ride" else "rides"}?") },
+        text = {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 420.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item {
+                    Text("This permanently removes the selected rides, GPS routes, jumps, sensor data, and stops. This cannot be undone.")
+                }
+                if (preview.reassignments.isNotEmpty()) {
+                    item { Text("Trails kept with a new reference ride", fontWeight = FontWeight.Bold) }
+                    items(preview.reassignments, key = { "reassign:${it.trailId}" }) { reassignment ->
+                        Text("• ${reassignment.trailName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (ride.state == RideState.INTERRUPTED) AssistChip(onClick = {}, label = { Text("Interrupted") })
-                    Icon(Icons.Default.ChevronRight, null)
+                }
+                if (preview.deletedTrails.isNotEmpty()) {
+                    item { Text("Trails that will also be deleted", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) }
+                    items(preview.deletedTrails, key = { "delete:${it.trailId}" }) { trail ->
+                        Text("• ${trail.trailName}", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                if (preview.removedCustomItems.isNotEmpty()) {
+                    item { Text("Custom trail items that cannot be remapped", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) }
+                    preview.reassignments.filter { it.removedItems.isNotEmpty() }.forEach { reassignment ->
+                        item(key = "custom-trail:${reassignment.trailId}") {
+                            Text(reassignment.trailName, fontWeight = FontWeight.Bold)
+                        }
+                        items(reassignment.removedItems, key = { it.key }) { item ->
+                            Text("• ${item.name}", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+                errorMessage?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = !working,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+            ) {
+                if (working) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else Text("Delete permanently")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !working) { Text("Cancel") } },
+    )
+}
+
+@Composable
+internal fun HistoryScreen(
+    rides: List<RideEntity>,
+    imperial: Boolean,
+    onRide: (Long) -> Unit,
+    onPreviewDelete: suspend (Set<Long>) -> BulkRideDeletePreview,
+    onDelete: suspend (BulkRideDeletePreview) -> BulkRideDeleteResult,
+) {
+    val scope = rememberCoroutineScope()
+    val eligibleRideIds = remember(rides) {
+        rides.filter { it.state != RideState.RECORDING && it.state != RideState.PAUSED }.mapTo(linkedSetOf()) { it.id }
+    }
+    var selectionMode by rememberSaveable { mutableStateOf(false) }
+    var selectedRideIds by rememberSaveable { mutableStateOf(longArrayOf()) }
+    val selected = selectedRideIds.toSet()
+    var preview by remember { mutableStateOf<BulkRideDeletePreview?>(null) }
+    var working by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    fun setSelected(ids: Set<Long>) {
+        selectedRideIds = ids.sorted().toLongArray()
+        errorMessage = null
+    }
+    fun cancelSelection() {
+        selectionMode = false
+        setSelected(emptySet())
+        preview = null
+        errorMessage = null
+    }
+
+    LaunchedEffect(eligibleRideIds) {
+        val retained = selected.intersect(eligibleRideIds)
+        if (retained != selected) setSelected(retained)
+    }
+    BackHandler(enabled = selectionMode && !working) { cancelSelection() }
+
+    preview?.let { impact ->
+        BulkRideDeleteDialog(
+            preview = impact,
+            working = working,
+            errorMessage = errorMessage,
+            onDismiss = { if (!working) { preview = null; errorMessage = null } },
+            onConfirm = {
+                scope.launch {
+                    working = true
+                    errorMessage = null
+                    runCatching { onDelete(impact) }
+                        .onSuccess { cancelSelection() }
+                        .onFailure { errorMessage = it.message ?: "Unable to delete the selected rides." }
+                    working = false
+                }
+            },
+        )
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (selectionMode) {
+                IconButton(onClick = ::cancelSelection, enabled = !working) { Icon(Icons.Default.Close, "Cancel selection") }
+                Text("${selected.size} selected", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = { setSelected(toggleAllRideSelection(selected, eligibleRideIds)) },
+                    enabled = eligibleRideIds.isNotEmpty() && !working,
+                ) { Text(if (selected.containsAll(eligibleRideIds) && eligibleRideIds.isNotEmpty()) "Clear all" else "Select all") }
+                IconButton(
+                    onClick = {
+                        scope.launch {
+                            working = true
+                            errorMessage = null
+                            runCatching { onPreviewDelete(selected) }
+                                .onSuccess { preview = it }
+                                .onFailure { errorMessage = it.message ?: "Unable to review these rides." }
+                            working = false
+                        }
+                    },
+                    enabled = selected.isNotEmpty() && !working,
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    if (working) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                    else Icon(Icons.Default.Delete, "Delete selected rides")
+                }
+            } else {
+                Text("Ride history", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = { selectionMode = true },
+                    enabled = eligibleRideIds.isNotEmpty(),
+                ) { Text("Select") }
+            }
+        }
+        errorMessage?.takeIf { preview == null }?.let { message ->
+            Text(
+                message,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+        }
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (rides.isEmpty()) item { EmptyCard("No rides yet", "Record a ride to build your trail history.") }
+            items(rides, key = { it.id }) { ride ->
+                val selectedRide = ride.id in selected
+                val eligible = ride.id in eligibleRideIds
+                Card(
+                    modifier = Modifier.fillMaxWidth().semantics {
+                        contentDescription = "Ride ${formatDate(ride.startedAt)}${if (selectedRide) ", selected" else ""}"
+                    }.combinedClickable(
+                        enabled = !working,
+                        onClick = {
+                            if (selectionMode) {
+                                if (eligible) setSelected(toggleRideSelection(selected, ride.id))
+                            } else {
+                                onRide(ride.id)
+                            }
+                        },
+                        onLongClick = {
+                            if (eligible) {
+                                selectionMode = true
+                                setSelected(toggleRideSelection(selected, ride.id))
+                            }
+                        },
+                    ),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (selectedRide) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                ) {
+                    Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Route, null, tint = TrailCyan, modifier = Modifier.size(36.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(formatDate(ride.startedAt), fontWeight = FontWeight.Bold)
+                            Text("${formatDistance(ride.distanceMeters, imperial)} • ${formatDuration(ride.movingTimeMillis)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (ride.state == RideState.INTERRUPTED) AssistChip(onClick = {}, label = { Text("Interrupted") })
+                        if (selectionMode) {
+                            Checkbox(
+                                checked = selectedRide,
+                                onCheckedChange = { if (eligible) setSelected(toggleRideSelection(selected, ride.id)) },
+                                enabled = eligible && !working,
+                            )
+                        } else {
+                            Icon(Icons.Default.ChevronRight, null)
+                        }
+                    }
                 }
             }
         }
