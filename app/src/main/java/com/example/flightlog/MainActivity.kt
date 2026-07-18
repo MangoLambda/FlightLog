@@ -79,10 +79,7 @@ import com.example.flightlog.maps.TileCacheState
 import com.example.flightlog.maps.TileCacheStatus
 import com.example.flightlog.tracking.LiveRideState
 import com.example.flightlog.tracking.MotionTelemetry
-import com.example.flightlog.tracking.JumpSensorAnalysis
 import com.example.flightlog.tracking.JumpSensorAnalyzer
-import com.example.flightlog.tracking.OrientationSource
-import com.example.flightlog.tracking.SensorRateSummary
 import com.example.flightlog.tracking.TimedValue
 import com.example.flightlog.tracking.GpsStatus
 import com.example.flightlog.tracking.RideMath
@@ -108,6 +105,7 @@ import com.example.flightlog.ui.accelerationTrace
 import com.example.flightlog.ui.jumpNumbers
 import com.example.flightlog.ui.routeForRange
 import com.example.flightlog.ui.pointAtDistance
+import com.example.flightlog.ui.prePumpSpeedMetersPerSecond
 import com.example.flightlog.maps.MapStyle
 import com.example.flightlog.ui.theme.Amber
 import com.example.flightlog.ui.theme.FlightLogTheme
@@ -1106,6 +1104,9 @@ private fun JumpDetailScreen(
         }
     }
     val acceleration = remember(jump.id, motion) { accelerationTrace(jump, motion.accelerationFrames()) }
+    val prePumpSpeed = remember(jump.id, acceleration, points) {
+        prePumpSpeedMetersPerSecond(jump, acceleration, points)
+    }
     val sensorAnalysis = remember(jump, motion, mountingMode) { JumpSensorAnalyzer.analyze(jump, motion, mountingMode) }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -1139,16 +1140,20 @@ private fun JumpDetailScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Text("JUMP ESTIMATE", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                            JumpDetailMetric("FLIGHT", String.format(Locale.US, "%.2f s", jump.displayFlightSeconds), Modifier.weight(1f))
-                            JumpDetailMetric("HEIGHT", formatHeight(jump.displayHeightMeters, imperial), Modifier.weight(1f))
-                            JumpDetailMetric("DISTANCE", formatDistance(jump.displayDistanceMeters, imperial), Modifier.weight(1f))
+                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Row(Modifier.fillMaxWidth()) {
+                                JumpDetailMetric("FLIGHT", String.format(Locale.US, "%.2f s", jump.displayFlightSeconds), Modifier.weight(1f))
+                                JumpDetailMetric("HEIGHT", formatHeight(jump.displayHeightMeters, imperial), Modifier.weight(1f))
+                            }
+                            Row(Modifier.fillMaxWidth()) {
+                                JumpDetailMetric("DISTANCE", formatDistance(jump.displayDistanceMeters, imperial), Modifier.weight(1f))
+                                JumpDetailMetric("TAKEOFF SPEED", prePumpSpeed?.let { formatSpeed(it, imperial) } ?: "—", Modifier.weight(1f))
+                            }
                         }
                         Text("${jump.confidence}% confidence • ${jump.sensorQuality.name.lowercase().replace('_', ' ')}")
                     }
                 }
             }
-            item { SensorEvidenceCard(sensorAnalysis, imperial) }
             item {
                 AccelerationTraceChart(
                     trace = acceleration,
@@ -1246,49 +1251,6 @@ private fun AccelerationTraceChart(
                 }
             }
         }
-    }
-}
-
-@Composable
-internal fun SensorEvidenceCard(analysis: JumpSensorAnalysis, imperial: Boolean) {
-    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Sensor evidence", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            SensorRateRow("Accelerometer", analysis.accelerometerRate)
-            SensorRateRow("Gyroscope", analysis.gyroscopeRate)
-            SensorRateRow("Orientation", analysis.orientationRate)
-            HorizontalDivider()
-            val orientationName = when (analysis.orientationSource) {
-                OrientationSource.GAME_ROTATION_VECTOR -> "Game rotation vector"
-                OrientationSource.ROTATION_VECTOR -> "Rotation vector fallback"
-                OrientationSource.NONE -> "Unavailable"
-            }
-            Text(
-                "$orientationName • ${(analysis.orientationCoverage * 100).roundToInt()}% acceleration coverage" +
-                    (analysis.maximumRotationDegrees?.let { " • ${it.roundToInt()}° max rotation" } ?: ""),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text("Height method: Airtime", fontWeight = FontWeight.Bold)
-            Text(
-                "Airtime ${formatHeight(analysis.airtimeHeightMeters, imperial)}",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun SensorRateRow(label: String, rate: SensorRateSummary) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(.4f))
-        Text(
-            rate.deliveredHz?.let { String.format(Locale.US, "%.1f Hz / %d requested", it, rate.requestedHz) }
-                ?: "Unavailable / ${rate.requestedHz} requested",
-            modifier = Modifier.weight(.6f),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = FontWeight.Medium,
-            textAlign = TextAlign.End,
-        )
     }
 }
 

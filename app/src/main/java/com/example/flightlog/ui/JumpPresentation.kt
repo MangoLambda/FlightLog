@@ -59,4 +59,20 @@ internal fun accelerationTrace(jump: JumpEventEntity, samples: List<MotionSample
         AccelerationPoint(sample.timestampMillis - jump.takeoffAt, magnitude / STANDARD_GRAVITY)
     }
 
+internal fun prePumpSpeedMetersPerSecond(
+    jump: JumpEventEntity,
+    acceleration: List<AccelerationPoint>,
+    points: List<TrackPointEntity>,
+): Double? {
+    val pump = acceleration
+        .filter { it.millisFromTakeoff in -250L..0L }
+        .maxByOrNull { it.magnitudeG }
+        ?: return null
+    val pumpAt = jump.takeoffAt + pump.millisFromTakeoff
+    return points.asSequence()
+        .filter { it.recordedAt < pumpAt && pumpAt - it.recordedAt <= 5_000L }
+        .maxByOrNull { it.recordedAt }
+        ?.speedMps
+}
+
 private const val STANDARD_GRAVITY = 9.80665

@@ -63,6 +63,30 @@ class JumpPresentationTest {
         assertEquals(1.0, acceleration.single().magnitudeG, .001)
     }
 
+    @Test fun takeoffSpeedUsesLatestGpsPointStrictlyBeforePump() {
+        val jump = jump(id = 1, takeoffAt = 10_000)
+        val acceleration = listOf(
+            AccelerationPoint(-200, 1.2),
+            AccelerationPoint(-100, 2.8),
+            AccelerationPoint(-20, 1.0),
+        )
+        val points = listOf(
+            trackPoint(9_800, 45.50, -73.50, speedMps = 8.0),
+            trackPoint(9_900, 45.51, -73.51, speedMps = 12.0),
+            trackPoint(10_000, 45.52, -73.52, speedMps = 25.0),
+        )
+
+        assertEquals(8.0, prePumpSpeedMetersPerSecond(jump, acceleration, points) ?: 0.0, .001)
+    }
+
+    @Test fun takeoffSpeedIsUnavailableWithoutRecentPrePumpGps() {
+        val jump = jump(id = 1, takeoffAt = 10_000)
+        val acceleration = listOf(AccelerationPoint(-100, 2.8))
+        val points = listOf(trackPoint(4_000, 45.50, -73.50, speedMps = 8.0))
+
+        assertEquals(null, prePumpSpeedMetersPerSecond(jump, acceleration, points))
+    }
+
     private fun jump(id: Long, takeoffAt: Long, status: JumpStatus = JumpStatus.PENDING) = JumpEventEntity(
         id = id,
         rideId = 1,
@@ -76,13 +100,13 @@ class JumpPresentationTest {
         sensorQuality = SensorQuality.FULL,
     )
 
-    private fun trackPoint(recordedAt: Long, latitude: Double, longitude: Double) = TrackPointEntity(
+    private fun trackPoint(recordedAt: Long, latitude: Double, longitude: Double, speedMps: Double = 8.0) = TrackPointEntity(
         rideId = 1,
         recordedAt = recordedAt,
         latitude = latitude,
         longitude = longitude,
         altitudeMeters = null,
-        speedMps = 8.0,
+        speedMps = speedMps,
         bearingDegrees = null,
         accuracyMeters = 3f,
     )
