@@ -24,7 +24,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
@@ -46,7 +45,6 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -397,7 +395,6 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         mapStyle = mapStyle,
                         imperial = imperial,
                         onBack = { vm.screen.value = AppScreen.REVIEW },
-                        onSave = vm::saveJump,
                         onConfigureMap = openMapSettings,
                     )
                     AppScreen.TRAIL_DETAIL -> TrailDetailScreen(
@@ -1099,16 +1096,9 @@ private fun JumpDetailScreen(
     mapStyle: MapStyle,
     imperial: Boolean,
     onBack: () -> Unit,
-    onSave: (JumpEventEntity, Double, Double, Double) -> Unit,
     onConfigureMap: () -> Unit,
 ) {
     if (jump == null) { EmptyCard("Jump unavailable", "Return to the ride review."); return }
-    var flight by rememberSaveable(jump.id) { mutableStateOf(String.format(Locale.US, "%.2f", jump.displayFlightSeconds)) }
-    var height by rememberSaveable(jump.id) { mutableStateOf(String.format(Locale.US, "%.2f", jump.displayHeightMeters)) }
-    var distance by rememberSaveable(jump.id) { mutableStateOf(String.format(Locale.US, "%.2f", jump.displayDistanceMeters)) }
-    val displayedFlight = flight.toDoubleOrNull()?.takeIf(Double::isFinite)?.coerceIn(0.0, 2.5) ?: jump.displayFlightSeconds
-    val displayedHeight = height.toDoubleOrNull()?.takeIf(Double::isFinite)?.coerceIn(0.0, 8.0) ?: jump.displayHeightMeters
-    val displayedDistance = distance.toDoubleOrNull()?.takeIf(Double::isFinite)?.coerceIn(0.0, 50.0) ?: jump.displayDistanceMeters
     val nearbyPoints = remember(jump.id, points) {
         val window = (jump.takeoffAt - 5_000L)..(jump.landingAt + 5_000L)
         points.filter { it.recordedAt in window }.ifEmpty {
@@ -1143,9 +1133,17 @@ private fun JumpDetailScreen(
             }
             item {
                 Surface(color = TrailCyan.copy(alpha = .14f), shape = RoundedCornerShape(20.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("ESTIMATED FLIGHT", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
-                        Text("${String.format(Locale.US, "%.2f", displayedFlight)} s", fontSize = 42.sp, fontWeight = FontWeight.Black)
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text("JUMP ESTIMATE", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            JumpDetailMetric("FLIGHT", String.format(Locale.US, "%.2f s", jump.displayFlightSeconds), Modifier.weight(1f))
+                            JumpDetailMetric("HEIGHT", formatHeight(jump.displayHeightMeters, imperial), Modifier.weight(1f))
+                            JumpDetailMetric("DISTANCE", formatDistance(jump.displayDistanceMeters, imperial), Modifier.weight(1f))
+                        }
                         Text("${jump.confidence}% confidence • ${jump.sensorQuality.name.lowercase().replace('_', ' ')}")
                     }
                 }
@@ -1159,23 +1157,15 @@ private fun JumpDetailScreen(
                     flightMillis = jump.landingAt - jump.takeoffAt,
                 )
             }
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Correct the estimate", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    DecimalField("Flight time (seconds)", flight) { flight = it }
-                    DecimalField("Height (meters)", height) { height = it }
-                    DecimalField("Distance (meters)", distance) { distance = it }
-                    Text(
-                        "The acceleration trace is measured by the phone.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(
-                        onClick = { onSave(jump, displayedFlight, displayedHeight, displayedDistance) },
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                    ) { Text("Save and confirm") }
-                }
-            }
         }
+    }
+}
+
+@Composable
+private fun JumpDetailMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, fontSize = 22.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
     }
 }
 
@@ -1706,18 +1696,6 @@ internal fun invalidEffortMessage(efforts: List<SectionEffortEntity>): String {
             "Some passes stopped here and others lost GPS, so no reliable comparison is available."
         else -> "No uninterrupted effort is available for this split yet."
     }
-}
-
-@Composable
-private fun DecimalField(label: String, value: String, onValue: (String) -> Unit) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = { if (it.length <= 6 && it.all { c -> c.isDigit() || c == '.' }) onValue(it) },
-        label = { Text(label) },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-    )
 }
 
 @Composable

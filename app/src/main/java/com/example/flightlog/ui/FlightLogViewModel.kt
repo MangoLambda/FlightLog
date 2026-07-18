@@ -7,7 +7,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import com.example.flightlog.FlightLogApplication
-import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.domain.JumpStatus
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.export.RideExporter
@@ -242,16 +241,6 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setJumpStatus(jumpId: Long, status: JumpStatus) = viewModelScope.launch {
         repository.setJumpStatus(jumpId, status)
-    }
-
-    fun saveJump(jump: JumpEventEntity, flight: Double, height: Double, distance: Double) = viewModelScope.launch {
-        repository.updateJump(jump.copy(
-            correctedFlightSeconds = flight.coerceIn(0.0, 2.5),
-            correctedHeightMeters = height.coerceIn(0.0, 8.0),
-            correctedDistanceMeters = distance.coerceIn(0.0, 50.0),
-            status = JumpStatus.CONFIRMED,
-        ))
-        screen.value = AppScreen.REVIEW
     }
 
     fun setImperial(enabled: Boolean) {
