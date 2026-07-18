@@ -200,7 +200,6 @@ class RideTrackingService : Service(), SensorEventListener {
         val gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         val gameRotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
         val rotation = gameRotation ?: sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-        val pressure = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
         orientationSource = when (rotation?.type) {
             Sensor.TYPE_GAME_ROTATION_VECTOR -> OrientationSource.GAME_ROTATION_VECTOR
             Sensor.TYPE_ROTATION_VECTOR -> OrientationSource.ROTATION_VECTOR
@@ -208,8 +207,6 @@ class RideTrackingService : Service(), SensorEventListener {
         }
         val registered = listOfNotNull(accelerometer, gyroscope, rotation).map {
             sensorManager.registerListener(this, it, SensorSamplingProfile.MOTION_PERIOD_US)
-        } + listOfNotNull(pressure).map {
-            sensorManager.registerListener(this, it, SensorSamplingProfile.PRESSURE_PERIOD_US)
         }
         sensorsRegistered = registered.any { it }
     }
@@ -258,11 +255,6 @@ class RideTrackingService : Service(), SensorEventListener {
                         timestampMillis, quaternion[1], quaternion[2], quaternion[3], quaternion[0],
                     )) >= MOTION_BUFFER_EVENT_LIMIT
                 ) {
-                    flushMotion()
-                }
-            }
-            Sensor.TYPE_PRESSURE -> if (recording && event.values.isNotEmpty()) {
-                if (motionBuffer.addPressure(PressureSample(timestampMillis, event.values[0])) >= MOTION_BUFFER_EVENT_LIMIT) {
                     flushMotion()
                 }
             }

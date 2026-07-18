@@ -81,11 +81,9 @@ import com.example.flightlog.maps.TileCacheState
 import com.example.flightlog.maps.TileCacheStatus
 import com.example.flightlog.tracking.LiveRideState
 import com.example.flightlog.tracking.MotionTelemetry
-import com.example.flightlog.tracking.JumpEstimateMethod
 import com.example.flightlog.tracking.JumpSensorAnalysis
 import com.example.flightlog.tracking.JumpSensorAnalyzer
 import com.example.flightlog.tracking.OrientationSource
-import com.example.flightlog.tracking.PressureQuality
 import com.example.flightlog.tracking.SensorRateSummary
 import com.example.flightlog.tracking.TimedValue
 import com.example.flightlog.tracking.GpsStatus
@@ -1131,7 +1129,7 @@ private fun JumpDetailScreen(
             contentPadding = PaddingValues(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            if (jump.latitude != null && jump.longitude != null) item {
+            if ((jump.latitude != null && jump.longitude != null) || nearbyPoints.isNotEmpty()) item {
                 Surface(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth().height(190.dp)) {
                     TrailMap(
                         points = nearbyPoints,
@@ -1162,9 +1160,6 @@ private fun JumpDetailScreen(
                     takeoffAt = jump.takeoffAt,
                     flightMillis = jump.landingAt - jump.takeoffAt,
                 )
-            }
-            if (sensorAnalysis.relativePressureHeight.size >= 2) item {
-                PressureHeightTraceCard(sensorAnalysis, jump.takeoffAt, jump.landingAt, imperial)
             }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1322,7 +1317,6 @@ internal fun SensorEvidenceCard(analysis: JumpSensorAnalysis, imperial: Boolean)
             SensorRateRow("Accelerometer", analysis.accelerometerRate)
             SensorRateRow("Gyroscope", analysis.gyroscopeRate)
             SensorRateRow("Orientation", analysis.orientationRate)
-            SensorRateRow("Barometer", analysis.pressureRate)
             HorizontalDivider()
             val orientationName = when (analysis.orientationSource) {
                 OrientationSource.GAME_ROTATION_VECTOR -> "Game rotation vector"
@@ -1334,21 +1328,10 @@ internal fun SensorEvidenceCard(analysis: JumpSensorAnalysis, imperial: Boolean)
                     (analysis.maximumRotationDegrees?.let { " • ${it.roundToInt()}° max rotation" } ?: ""),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            val method = if (analysis.estimateMethod == JumpEstimateMethod.AIRTIME_BAROMETER) "Airtime + barometer" else "Airtime"
-            Text("Height method: $method", fontWeight = FontWeight.Bold)
+            Text("Height method: Airtime", fontWeight = FontWeight.Bold)
             Text(
-                buildString {
-                    append("Airtime ${formatHeight(analysis.airtimeHeightMeters, imperial)}")
-                    analysis.barometricHeightMeters?.let { append(" • pressure ${formatHeight(it, imperial)}") }
-                    if (analysis.estimateMethod == JumpEstimateMethod.AIRTIME_BAROMETER) {
-                        append(" • fused ${formatHeight(analysis.fusedHeightMeters, imperial)}")
-                    }
-                },
+                "Airtime ${formatHeight(analysis.airtimeHeightMeters, imperial)}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                "Pressure: ${pressureQualityLabel(analysis.pressureQuality)}",
-                color = if (analysis.pressureQuality == PressureQuality.ACCEPTED) Lime else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -1367,52 +1350,6 @@ private fun SensorRateRow(label: String, rate: SensorRateSummary) {
             textAlign = TextAlign.End,
         )
     }
-}
-
-@Composable
-private fun PressureHeightTraceCard(analysis: JumpSensorAnalysis, takeoffAt: Long, landingAt: Long, imperial: Boolean) {
-    val trace = analysis.relativePressureHeight
-    val gridColor = MaterialTheme.colorScheme.outlineVariant
-    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Measured relative pressure height", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(
-                analysis.barometricHeightMeters?.let { "Detected peak ${formatHeight(it, imperial)} • ${pressureQualityLabel(analysis.pressureQuality)}" }
-                    ?: pressureQualityLabel(analysis.pressureQuality),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Canvas(Modifier.fillMaxWidth().height(120.dp)) {
-                val start = trace.first().timestampMillis
-                val end = trace.last().timestampMillis.coerceAtLeast(start + 1)
-                val minimum = trace.minOf { it.value }.coerceAtMost(0.0)
-                val maximum = trace.maxOf { it.value }.coerceAtLeast(minimum + 0.1)
-                fun x(timestamp: Long) = ((timestamp - start).toFloat() / (end - start)) * size.width
-                fun y(height: Double) = ((maximum - height) / (maximum - minimum) * size.height).toFloat()
-                val takeoffX = x(takeoffAt).coerceIn(0f, size.width)
-                val landingX = x(landingAt).coerceIn(0f, size.width)
-                drawRect(TrailCyan.copy(alpha = .14f), topLeft = Offset(takeoffX, 0f), size = androidx.compose.ui.geometry.Size((landingX - takeoffX).coerceAtLeast(0f), size.height))
-                val path = Path()
-                trace.forEachIndexed { index, point ->
-                    if (index == 0) path.moveTo(x(point.timestampMillis), y(point.value))
-                    else path.lineTo(x(point.timestampMillis), y(point.value))
-                }
-                drawPath(path, TrailCyan, style = Stroke(width = 3f, cap = StrokeCap.Round))
-                drawLine(gridColor, Offset(0f, size.height), Offset(size.width, size.height), strokeWidth = 2f)
-            }
-        }
-    }
-}
-
-internal fun pressureQualityLabel(quality: PressureQuality): String = when (quality) {
-    PressureQuality.UNAVAILABLE -> "unavailable"
-    PressureQuality.RATE_TOO_LOW -> "delivered rate too low"
-    PressureQuality.INSUFFICIENT_SAMPLES -> "not enough samples"
-    PressureQuality.NOISY_BASELINE -> "baseline too noisy"
-    PressureQuality.BASELINE_SHIFT -> "pressure shifted after landing"
-    PressureQuality.INVALID_APEX_TIMING -> "pressure peak did not align with the jump"
-    PressureQuality.OUT_OF_RANGE -> "height change was outside the reliable range"
-    PressureQuality.DISAGREES -> "clean signal disagreed with airtime"
-    PressureQuality.ACCEPTED -> "accepted for conservative fusion"
 }
 
 @Composable

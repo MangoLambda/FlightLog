@@ -17,7 +17,6 @@ object JumpMotionTrace {
             accelerometer = telemetry.accelerometer.filter { it.timestampMillis in window }.sortedBy { it.timestampMillis },
             gyroscope = telemetry.gyroscope.filter { it.timestampMillis in window }.sortedBy { it.timestampMillis },
             orientation = telemetry.orientation.filter { it.timestampMillis in window }.sortedBy { it.timestampMillis },
-            pressure = telemetry.pressure.filter { it.timestampMillis in window }.sortedBy { it.timestampMillis },
         )
     }
 

@@ -1,6 +1,7 @@
 package com.example.flightlog.ui
 
 import com.example.flightlog.data.JumpEventEntity
+import com.example.flightlog.data.TrackPointEntity
 import com.example.flightlog.domain.JumpStatus
 import com.example.flightlog.domain.SensorQuality
 import com.example.flightlog.tracking.MotionSample
@@ -21,6 +22,36 @@ class JumpPresentationTest {
         assertEquals(1, numbers[90])
         assertEquals(2, numbers[10])
         assertEquals(3, numbers[40])
+    }
+
+    @Test fun mapCoordinatesUseGpsTimesForEndpointsAndStoredCoordinateForNumber() {
+        val jump = jump(id = 7, takeoffAt = 1_000).copy(
+            landingAt = 1_600,
+            latitude = 45.51,
+            longitude = -73.51,
+        )
+        val coordinates = jumpMapCoordinates(jump, listOf(
+            trackPoint(900, 45.50, -73.50),
+            trackPoint(1_700, 45.52, -73.52),
+        ))
+
+        assertEquals(45.51, coordinates.center?.latitude ?: 0.0, .0001)
+        assertEquals(-73.51, coordinates.center?.longitude ?: 0.0, .0001)
+        assertEquals(45.50, coordinates.takeoff?.latitude ?: 0.0, .0001)
+        assertEquals(-73.50, coordinates.takeoff?.longitude ?: 0.0, .0001)
+        assertEquals(45.52, coordinates.landing?.latitude ?: 0.0, .0001)
+        assertEquals(-73.52, coordinates.landing?.longitude ?: 0.0, .0001)
+    }
+
+    @Test fun mapCoordinatesCanRecoverMissingStoredCoordinateFromRoute() {
+        val jump = jump(id = 8, takeoffAt = 1_000).copy(landingAt = 1_600)
+        val coordinates = jumpMapCoordinates(jump, listOf(
+            trackPoint(1_000, 45.50, -73.50),
+            trackPoint(1_600, 45.52, -73.52),
+        ))
+
+        assertEquals(45.51, coordinates.center?.latitude ?: 0.0, .0001)
+        assertEquals(-73.51, coordinates.center?.longitude ?: 0.0, .0001)
     }
 
     @Test fun modeledArcStartsAndEndsOnGroundWithMidpointAtRequestedHeight() {
@@ -57,5 +88,16 @@ class JumpPresentationTest {
         confidence = 80,
         status = status,
         sensorQuality = SensorQuality.FULL,
+    )
+
+    private fun trackPoint(recordedAt: Long, latitude: Double, longitude: Double) = TrackPointEntity(
+        rideId = 1,
+        recordedAt = recordedAt,
+        latitude = latitude,
+        longitude = longitude,
+        altitudeMeters = null,
+        speedMps = 8.0,
+        bearingDegrees = null,
+        accuracyMeters = 3f,
     )
 }

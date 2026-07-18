@@ -468,7 +468,7 @@ class RideProcessor(private val database: FlightLogDatabase) {
     suspend fun materializeMissingJumpTraces() {
         dao.jumpsMissingMotionTrace().forEach { jump ->
             val telemetry = JumpMotionTrace.loadRaw(dao, jump)
-            if (telemetry.sampleCount > 0) dao.insertJumpMotionTrace(JumpMotionTrace.encode(jump.id, telemetry))
+            if (telemetry.hasUsableSamples) dao.insertJumpMotionTrace(JumpMotionTrace.encode(jump.id, telemetry))
         }
     }
 
@@ -496,13 +496,13 @@ class RideProcessor(private val database: FlightLogDatabase) {
         val motionTelemetry = MotionTelemetry.merge(motionChunks.map { TelemetryCodec.decodeMotion(it.payload, it.checksum) })
         val motion = motionTelemetry.accelerationFrames()
         val analyzedJumps = if (
-            motionTelemetry.sampleCount > 0 &&
-            motionTelemetry.encodingVersion >= TelemetryCodec.MOTION_ENCODING_VERSION
+            motionTelemetry.hasUsableSamples &&
+            motionTelemetry.encodingVersion >= TelemetryCodec.LEGACY_MULTICHANNEL_MOTION_ENCODING_VERSION
         ) {
             dao.jumps(rideId).map { jump ->
                 val analysis = JumpSensorAnalyzer.analyze(jump, JumpMotionTrace.samples(jump, motionTelemetry), ride.mountingMode)
                 jump.copy(
-                    estimatedHeightMeters = analysis.fusedHeightMeters,
+                    estimatedHeightMeters = analysis.airtimeHeightMeters,
                     confidence = analysis.estimatedConfidence,
                 )
             }

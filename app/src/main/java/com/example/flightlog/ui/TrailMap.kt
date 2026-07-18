@@ -99,6 +99,12 @@ private const val JUMP_SOURCE = "flightlog-jumps"
 private const val JUMP_SELECTED_LAYER = "flightlog-selected-jump"
 private const val JUMP_CIRCLE_LAYER = "flightlog-jump-points"
 private const val JUMP_LABEL_LAYER = "flightlog-jump-labels"
+private const val JUMP_TAKEOFF_SOURCE = "flightlog-jump-takeoffs"
+private const val JUMP_LANDING_SOURCE = "flightlog-jump-landings"
+private const val JUMP_TAKEOFF_IMAGE = "flightlog-jump-takeoff-image"
+private const val JUMP_LANDING_IMAGE = "flightlog-jump-landing-image"
+private const val JUMP_TAKEOFF_LAYER = "flightlog-jump-takeoff-points"
+private const val JUMP_LANDING_LAYER = "flightlog-jump-landing-points"
 private const val STOP_SOURCE = "flightlog-stops"
 private const val STOP_IMAGE = "flightlog-stop-image"
 private const val SPLIT_ROUTE_SOURCE = "flightlog-split-routes"
@@ -209,13 +215,12 @@ fun TrailMap(
         }
     }
 
-    LaunchedEffect(map, selectedJumpId, jumps) {
+    LaunchedEffect(map, selectedJumpId, jumps, points) {
         val selected = jumps.firstOrNull { it.id == selectedJumpId }
-        val latitude = selected?.latitude ?: return@LaunchedEffect
-        val longitude = selected.longitude ?: return@LaunchedEffect
+        val coordinate = selected?.let { jumpMapCoordinates(it, points).center } ?: return@LaunchedEffect
         val readyMap = map ?: return@LaunchedEffect
         val camera = CameraPosition.Builder()
-            .target(LatLng(latitude, longitude))
+            .target(LatLng(coordinate.latitude, coordinate.longitude))
             .zoom(maxOf(readyMap.cameraPosition.zoom, JUMP_ZOOM))
             .build()
         readyMap.animateCamera(CameraUpdateFactory.newCameraPosition(camera), 350)
@@ -268,6 +273,8 @@ fun TrailMap(
                                 JUMP_SELECTED_LAYER,
                                 JUMP_CIRCLE_LAYER,
                                 JUMP_LABEL_LAYER,
+                                JUMP_TAKEOFF_LAYER,
+                                JUMP_LANDING_LAYER,
                             ).firstOrNull()
                             val jumpId = feature?.getNumberProperty("jumpId")?.toLong()
                             if (jumpId == null) false else {
@@ -505,6 +512,16 @@ private fun addRideLayers(style: Style, context: Context) {
     style.addLayer(LineLayer("flightlog-comparison-route-line", COMPARISON_ROUTE_SOURCE).withProperties(
         lineColor("#FFB84D"), lineWidth(4f), lineDasharray(arrayOf(2f, 2f)),
     ))
+    style.addImage(JUMP_TAKEOFF_IMAGE, boundaryHandleBitmap(context, Color.rgb(183, 243, 74)))
+    style.addSource(GeoJsonSource(JUMP_TAKEOFF_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(SymbolLayer(JUMP_TAKEOFF_LAYER, JUMP_TAKEOFF_SOURCE).withProperties(
+        iconImage(JUMP_TAKEOFF_IMAGE), iconSize(.8f), iconAllowOverlap(true),
+    ))
+    style.addImage(JUMP_LANDING_IMAGE, boundaryHandleBitmap(context, Color.rgb(255, 184, 77)))
+    style.addSource(GeoJsonSource(JUMP_LANDING_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(SymbolLayer(JUMP_LANDING_LAYER, JUMP_LANDING_SOURCE).withProperties(
+        iconImage(JUMP_LANDING_IMAGE), iconSize(.8f), iconAllowOverlap(true),
+    ))
     style.addSource(GeoJsonSource(JUMP_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(CircleLayer(JUMP_SELECTED_LAYER, JUMP_SOURCE).withProperties(
         circleColor("#42D9E8"), circleRadius(14f),
@@ -595,16 +612,32 @@ private fun updateMap(
         } else emptyArray()
         style.getSourceAs<GeoJsonSource>(COMPARISON_ROUTE_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(comparisonFeatures))
         val numbers = jumpNumbers(jumps)
+        val jumpCoordinates = jumps.associateWith { jump -> jumpMapCoordinates(jump, points) }
         val jumpFeatures = jumps.mapNotNull { jump ->
-            val lat = jump.latitude ?: return@mapNotNull null
-            val lon = jump.longitude ?: return@mapNotNull null
-            Feature.fromGeometry(Point.fromLngLat(lon, lat)).apply {
+            val coordinate = jumpCoordinates.getValue(jump).center ?: return@mapNotNull null
+            Feature.fromGeometry(Point.fromLngLat(coordinate.longitude, coordinate.latitude)).apply {
                 addNumberProperty("jumpId", jump.id)
                 addStringProperty("label", numbers[jump.id]?.toString() ?: "")
                 addBooleanProperty("selected", jump.id == selectedJumpId)
             }
         }
         style.getSourceAs<GeoJsonSource>(JUMP_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(jumpFeatures))
+        val takeoffFeatures = jumps.mapNotNull { jump ->
+            jumpCoordinates.getValue(jump).takeoff?.let { coordinate ->
+                Feature.fromGeometry(Point.fromLngLat(coordinate.longitude, coordinate.latitude)).apply {
+                    addNumberProperty("jumpId", jump.id)
+                }
+            }
+        }
+        style.getSourceAs<GeoJsonSource>(JUMP_TAKEOFF_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(takeoffFeatures))
+        val landingFeatures = jumps.mapNotNull { jump ->
+            jumpCoordinates.getValue(jump).landing?.let { coordinate ->
+                Feature.fromGeometry(Point.fromLngLat(coordinate.longitude, coordinate.latitude)).apply {
+                    addNumberProperty("jumpId", jump.id)
+                }
+            }
+        }
+        style.getSourceAs<GeoJsonSource>(JUMP_LANDING_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(landingFeatures))
         val stopFeatures = stopPoints.map {
             Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude))
         }
@@ -639,9 +672,10 @@ private fun updateMap(
         } ?: emptyArray()
         style.getSourceAs<GeoJsonSource>(RIDER_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(riderFeatures))
         val selectedJump = jumps.firstOrNull { it.id == selectedJumpId }
-        if (fitRoute && selectedJump?.latitude != null && selectedJump.longitude != null) {
+        val selectedCoordinate = selectedJump?.let { jumpCoordinates.getValue(it).center }
+        if (fitRoute && selectedCoordinate != null) {
             readyMap.cameraPosition = CameraPosition.Builder()
-                .target(LatLng(selectedJump.latitude, selectedJump.longitude))
+                .target(LatLng(selectedCoordinate.latitude, selectedCoordinate.longitude))
                 .zoom(maxOf(readyMap.cameraPosition.zoom, JUMP_ZOOM))
                 .build()
         } else if (fitRoute && points.size >= 2) {

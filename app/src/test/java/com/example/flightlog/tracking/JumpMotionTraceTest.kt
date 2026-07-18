@@ -14,13 +14,11 @@ class JumpMotionTraceTest {
         )
         val telemetry = MotionTelemetry(
             accelerometer = listOf(1_851L, 1_500L, 249L, 250L, 1_000L, 1_850L).map(::sample),
-            pressure = listOf(PressureSample(250L, 1_000f), PressureSample(1_851L, 999f)),
         )
 
         val selected = JumpMotionTrace.samples(jump, telemetry)
 
         assertEquals(listOf(250L, 1_000L, 1_500L, 1_850L), selected.accelerometer.map { it.timestampMillis })
-        assertEquals(listOf(250L), selected.pressure.map { it.timestampMillis })
     }
 
     @Test fun persistentTraceRoundTripsThroughVersionedCodec() {

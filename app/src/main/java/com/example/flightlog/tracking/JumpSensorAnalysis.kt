@@ -5,29 +5,12 @@ import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.SensorQuality
 import kotlin.math.abs
 import kotlin.math.acos
-import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.sqrt
 
 object SensorSamplingProfile {
     const val MOTION_HZ = 100
-    const val PRESSURE_HZ = 25
     const val MOTION_PERIOD_US = 1_000_000 / MOTION_HZ
-    const val PRESSURE_PERIOD_US = 1_000_000 / PRESSURE_HZ
-}
-
-enum class JumpEstimateMethod { AIRTIME, AIRTIME_BAROMETER }
-
-enum class PressureQuality {
-    UNAVAILABLE,
-    RATE_TOO_LOW,
-    INSUFFICIENT_SAMPLES,
-    NOISY_BASELINE,
-    BASELINE_SHIFT,
-    INVALID_APEX_TIMING,
-    OUT_OF_RANGE,
-    DISAGREES,
-    ACCEPTED,
 }
 
 data class SensorRateSummary(
@@ -43,18 +26,12 @@ data class JumpSensorAnalysis(
     val accelerometerRate: SensorRateSummary,
     val gyroscopeRate: SensorRateSummary,
     val orientationRate: SensorRateSummary,
-    val pressureRate: SensorRateSummary,
     val orientationSource: OrientationSource,
     val orientationCoverage: Double,
     val maximumRotationDegrees: Double?,
-    val pressureQuality: PressureQuality,
-    val barometricHeightMeters: Double?,
     val airtimeHeightMeters: Double,
-    val fusedHeightMeters: Double,
-    val estimateMethod: JumpEstimateMethod,
     val estimatedConfidence: Int,
     val worldVerticalAcceleration: List<TimedValue>,
-    val relativePressureHeight: List<TimedValue>,
 )
 
 object JumpSensorAnalyzer {
@@ -69,11 +46,9 @@ object JumpSensorAnalyzer {
         val acceleration = telemetry.accelerometer.sortedBy { it.timestampMillis }
         val gyroscope = telemetry.gyroscope.sortedBy { it.timestampMillis }
         val orientation = telemetry.orientation.sortedBy { it.timestampMillis }
-        val pressure = telemetry.pressure.sortedBy { it.timestampMillis }
         val accelerationRate = rate(acceleration.map { it.timestampMillis }, SensorSamplingProfile.MOTION_HZ)
         val gyroscopeRate = rate(gyroscope.map { it.timestampMillis }, SensorSamplingProfile.MOTION_HZ)
         val orientationRate = rate(orientation.map { it.timestampMillis }, SensorSamplingProfile.MOTION_HZ)
-        val pressureRate = rate(pressure.map { it.timestampMillis }, SensorSamplingProfile.PRESSURE_HZ)
 
         val oriented = acceleration.mapNotNull { sample ->
             interpolateOrientation(sample.timestampMillis, orientation)?.let { quaternion ->
@@ -83,15 +58,8 @@ object JumpSensorAnalyzer {
         }
         val orientationCoverage = if (acceleration.isEmpty()) 0.0 else oriented.size.toDouble() / acceleration.size
         val maximumRotation = if (orientationCoverage >= 0.8) maximumRotationDegrees(jump, orientation) else null
-        val pressureResult = analyzePressure(jump, pressure, pressureRate)
         val airtimeHeight = (STANDARD_GRAVITY * jump.estimatedFlightSeconds.coerceIn(0.0, 2.5).pow(2) / 8.0)
             .coerceIn(0.0, 8.0)
-        val acceptedBarometer = pressureResult.quality == PressureQuality.ACCEPTED
-        val fusedHeight = if (acceptedBarometer) {
-            airtimeHeight * 0.75 + pressureResult.heightMeters!! * 0.25
-        } else {
-            airtimeHeight
-        }
         val confidence = confidence(
             jump = jump,
             mountingMode = mountingMode,
@@ -100,24 +68,17 @@ object JumpSensorAnalyzer {
             oriented = oriented,
             orientationCoverage = orientationCoverage,
             maximumRotationDegrees = maximumRotation,
-            pressureQuality = pressureResult.quality,
         )
         return JumpSensorAnalysis(
             accelerometerRate = accelerationRate,
             gyroscopeRate = gyroscopeRate,
             orientationRate = orientationRate,
-            pressureRate = pressureRate,
             orientationSource = telemetry.orientationSource,
             orientationCoverage = orientationCoverage,
             maximumRotationDegrees = maximumRotation,
-            pressureQuality = pressureResult.quality,
-            barometricHeightMeters = pressureResult.heightMeters,
             airtimeHeightMeters = airtimeHeight,
-            fusedHeightMeters = fusedHeight,
-            estimateMethod = if (acceptedBarometer) JumpEstimateMethod.AIRTIME_BAROMETER else JumpEstimateMethod.AIRTIME,
             estimatedConfidence = confidence,
             worldVerticalAcceleration = oriented,
-            relativePressureHeight = pressureResult.trace,
         )
     }
 
@@ -129,7 +90,6 @@ object JumpSensorAnalyzer {
         oriented: List<TimedValue>,
         orientationCoverage: Double,
         maximumRotationDegrees: Double?,
-        pressureQuality: PressureQuality,
     ): Int {
         val base = when (jump.sensorQuality) {
             SensorQuality.FULL -> 78
@@ -162,68 +122,8 @@ object JumpSensorAnalyzer {
         } else {
             0
         }
-        val pressureAdjustment = when (pressureQuality) {
-            PressureQuality.ACCEPTED -> 5
-            PressureQuality.DISAGREES -> -5
-            else -> 0
-        }
-        return (base + landingAdjustment + mountingAdjustment - rotationPenalty + verticalAdjustment + pressureAdjustment)
+        return (base + landingAdjustment + mountingAdjustment - rotationPenalty + verticalAdjustment)
             .coerceIn(15, 95)
-    }
-
-    private data class PressureResult(
-        val quality: PressureQuality,
-        val heightMeters: Double? = null,
-        val trace: List<TimedValue> = emptyList(),
-    )
-
-    private fun analyzePressure(
-        jump: JumpEventEntity,
-        pressure: List<PressureSample>,
-        rate: SensorRateSummary,
-    ): PressureResult {
-        if (pressure.isEmpty()) return PressureResult(PressureQuality.UNAVAILABLE)
-        val pre = pressure.filter { it.timestampMillis in (jump.takeoffAt - 600)..(jump.takeoffAt - 100) }
-        val flight = pressure.filter { it.timestampMillis in jump.takeoffAt..jump.landingAt }
-        val post = pressure.filter { it.timestampMillis in (jump.landingAt + 100)..(jump.landingAt + 350) }
-        val preMedian = pre.map { it.pressureHpa.toDouble() }.median()
-        val trace = preMedian?.let { baseline ->
-            pressure.map { TimedValue(it.timestampMillis, relativeHeightMeters(baseline, it.pressureHpa.toDouble())) }
-        }.orEmpty()
-        if ((rate.deliveredHz ?: 0.0) < 15.0 || (rate.maximumGapMillis ?: Long.MAX_VALUE) > 100L) {
-            return PressureResult(PressureQuality.RATE_TOO_LOW, trace = trace)
-        }
-        if (pre.size < 4 || flight.size < 3 || post.size < 3 || preMedian == null) {
-            return PressureResult(PressureQuality.INSUFFICIENT_SAMPLES, trace = trace)
-        }
-        if (medianAbsoluteDeviation(pre.map { it.pressureHpa.toDouble() }) > 0.02) {
-            return PressureResult(PressureQuality.NOISY_BASELINE, trace = trace)
-        }
-        val postMedian = post.map { it.pressureHpa.toDouble() }.median()!!
-        if (abs(preMedian - postMedian) > 0.05) {
-            return PressureResult(PressureQuality.BASELINE_SHIFT, trace = trace)
-        }
-        val smoothed = flight.mapIndexed { index, sample ->
-            val from = (index - 1).coerceAtLeast(0)
-            val to = (index + 1).coerceAtMost(flight.lastIndex)
-            sample.timestampMillis to flight.subList(from, to + 1).map { it.pressureHpa.toDouble() }.median()!!
-        }
-        val apex = smoothed.minBy { it.second }
-        val flightMillis = (jump.landingAt - jump.takeoffAt).coerceAtLeast(1)
-        val apexProgress = (apex.first - jump.takeoffAt).toDouble() / flightMillis
-        if (apexProgress !in 0.2..0.8) {
-            return PressureResult(PressureQuality.INVALID_APEX_TIMING, trace = trace)
-        }
-        val height = relativeHeightMeters(preMedian, apex.second)
-        if (height !in 0.2..8.0) {
-            return PressureResult(PressureQuality.OUT_OF_RANGE, height, trace)
-        }
-        val airtimeHeight = (STANDARD_GRAVITY * jump.estimatedFlightSeconds.coerceIn(0.0, 2.5).pow(2) / 8.0)
-            .coerceIn(0.0, 8.0)
-        if (abs(height - airtimeHeight) > max(0.5, airtimeHeight * 0.5)) {
-            return PressureResult(PressureQuality.DISAGREES, height, trace)
-        }
-        return PressureResult(PressureQuality.ACCEPTED, height, trace)
     }
 
     internal fun rate(timestamps: List<Long>, requestedHz: Int): SensorRateSummary {
@@ -321,16 +221,6 @@ object JumpSensorAnalyzer {
     private fun magnitude(sample: Vector3Sample): Double = sqrt(
         sample.x.toDouble().pow(2) + sample.y.toDouble().pow(2) + sample.z.toDouble().pow(2),
     )
-    private fun relativeHeightMeters(baselinePressureHpa: Double, pressureHpa: Double): Double =
-        44_330.0 * (1.0 - (pressureHpa / baselinePressureHpa).pow(0.190294957))
-    private fun medianAbsoluteDeviation(values: List<Double>): Double {
-        val median = values.median() ?: return Double.POSITIVE_INFINITY
-        return values.map { abs(it - median) }.median() ?: Double.POSITIVE_INFINITY
-    }
-    private fun List<Double>.median(): Double? = if (isEmpty()) null else sorted().let { values ->
-        if (values.size % 2 == 1) values[values.size / 2]
-        else (values[values.size / 2 - 1] + values[values.size / 2]) / 2.0
-    }
     private fun List<Long>.medianMillis(): Double? = if (isEmpty()) null else sorted().let { values ->
         if (values.size % 2 == 1) values[values.size / 2].toDouble()
         else (values[values.size / 2 - 1] + values[values.size / 2]) / 2.0

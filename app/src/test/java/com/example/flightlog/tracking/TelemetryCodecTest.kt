@@ -35,7 +35,6 @@ class TelemetryCodecTest {
             accelerometer = (0 until 500).map { Vector3Sample(start + it * 10, 0.1f * it, 1f, 9.8f) },
             gyroscope = (0 until 500).map { Vector3Sample(start + it * 10, .2f, .3f, .4f) },
             orientation = (0 until 500).map { RotationSample(start + it * 10, 0f, 0f, 0f, 1f) },
-            pressure = (0 until 125).map { PressureSample(start + it * 40, 1_000f - it * .0001f) },
         )
         val encoded = TelemetryCodec.encodeMotion(telemetry)
         val decoded = TelemetryCodec.decodeMotion(encoded.payload, encoded.checksum)
@@ -43,7 +42,6 @@ class TelemetryCodecTest {
         assertEquals(telemetry.sampleCount, decoded.sampleCount)
         assertEquals(telemetry.endedAt, decoded.endedAt)
         assertEquals(telemetry.accelerometer[10].x, decoded.accelerometer[10].x, .001f)
-        assertEquals(telemetry.pressure[10].pressureHpa, decoded.pressure[10].pressureHpa, .0001f)
         assertEquals(OrientationSource.GAME_ROTATION_VECTOR, decoded.orientationSource)
         val corrupt = encoded.payload.clone().also { it[it.lastIndex] = (it.last() + 1).toByte() }
         assertThrows(IllegalArgumentException::class.java) { TelemetryCodec.decodeMotion(corrupt, encoded.checksum) }
@@ -62,10 +60,9 @@ class TelemetryCodecTest {
         assertEquals(samples.size, decoded.sampleCount)
         assertEquals(samples, decoded.accelerationFrames())
         assertTrue(decoded.orientation.isEmpty())
-        assertTrue(decoded.pressure.isEmpty())
     }
 
-    @Test fun reencodingLegacyMotionReportsTheV2ChannelSampleCount() {
+    @Test fun reencodingLegacyMotionReportsTheCurrentChannelSampleCount() {
         val legacy = TelemetryCodec.encodeLegacyMotion(listOf(
             MotionSample(1_000, 0f, 0f, 9.8f, .1f, .2f, .3f),
             MotionSample(1_010, 0f, 0f, 9.7f, .2f, .3f, .4f),

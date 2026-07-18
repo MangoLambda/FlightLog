@@ -15,7 +15,6 @@ import com.example.flightlog.domain.TelemetryKind
 import com.example.flightlog.tracking.JumpMotionTrace
 import com.example.flightlog.tracking.MotionTelemetry
 import com.example.flightlog.tracking.OrientationSource
-import com.example.flightlog.tracking.PressureSample
 import com.example.flightlog.tracking.RotationSample
 import com.example.flightlog.tracking.Vector3Sample
 import com.example.flightlog.tracking.RideProcessor
@@ -59,7 +58,7 @@ class JumpMotionTracePersistenceTest {
         database.close()
     }
 
-    @Test fun postRideProcessingUsesV2SensorFusionAndPreservesCorrections() = runBlocking {
+    @Test fun postRideProcessingUsesAirtimeAndPreservesCorrections() = runBlocking {
         val database = Room.inMemoryDatabaseBuilder(context, FlightLogDatabase::class.java).build()
         val dao = database.dao()
         val rideId = dao.insertRide(RideEntity(
@@ -99,10 +98,9 @@ class JumpMotionTracePersistenceTest {
 
         val analyzed = dao.jumps(rideId).single { it.id == jumpId }
         val airtimeHeight = 9.80665 * .6.pow(2) / 8.0
-        val expectedFusedHeight = airtimeHeight * .75 + .5 * .25
-        assertEquals(expectedFusedHeight, analyzed.estimatedHeightMeters, .04)
+        assertEquals(airtimeHeight, analyzed.estimatedHeightMeters, .04)
         assertEquals(1.25, analyzed.correctedHeightMeters!!, .001)
-        assertEquals(90, analyzed.confidence)
+        assertEquals(85, analyzed.confidence)
         database.close()
     }
 
@@ -156,20 +154,11 @@ class JumpMotionTracePersistenceTest {
             }
             Vector3Sample(timestamp, 0f, 0f, z)
         }
-        val pressure = (400L..1_960L step 40).map { timestamp ->
-            val progress = ((timestamp - 1_000).toDouble() / 600.0).coerceIn(0.0, 1.0)
-            val height = if (timestamp in 1_000L..1_600L) .5 * 4.0 * progress * (1.0 - progress) else 0.0
-            PressureSample(timestamp, pressureForHeight(1_000.0, height).toFloat())
-        }
         return MotionTelemetry(
             orientationSource = OrientationSource.GAME_ROTATION_VECTOR,
             accelerometer = accelerometer,
             gyroscope = (start..end step 10).map { Vector3Sample(it, 0f, 0f, 0f) },
             orientation = (start..end step 10).map { RotationSample(it, 0f, 0f, 0f, 1f) },
-            pressure = pressure,
         )
     }
-
-    private fun pressureForHeight(baselineHpa: Double, heightMeters: Double): Double =
-        baselineHpa * (1.0 - heightMeters / 44_330.0).pow(1.0 / 0.190294957)
 }

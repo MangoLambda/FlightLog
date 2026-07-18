@@ -47,8 +47,6 @@ data class RotationSample(
     val w: Float,
 )
 
-data class PressureSample(val timestampMillis: Long, val pressureHpa: Float)
-
 enum class OrientationSource { NONE, GAME_ROTATION_VECTOR, ROTATION_VECTOR }
 
 data class MotionTelemetry(
@@ -57,13 +55,18 @@ data class MotionTelemetry(
     val accelerometer: List<Vector3Sample> = emptyList(),
     val gyroscope: List<Vector3Sample> = emptyList(),
     val orientation: List<RotationSample> = emptyList(),
-    val pressure: List<PressureSample> = emptyList(),
+    /** Counts samples from the removed channel in legacy v2 payloads for backup compatibility. */
+    internal val discardedSampleCount: Int = 0,
+    internal val discardedStartedAt: Long? = null,
+    internal val discardedEndedAt: Long? = null,
 ) {
-    val sampleCount: Int get() = if (encodingVersion == TelemetryCodec.LEGACY_MOTION_ENCODING_VERSION) {
+    val channelSampleCount: Int get() = if (encodingVersion == TelemetryCodec.LEGACY_MOTION_ENCODING_VERSION) {
         accelerometer.size
     } else {
-        accelerometer.size + gyroscope.size + orientation.size + pressure.size
+        accelerometer.size + gyroscope.size + orientation.size
     }
+    val hasUsableSamples: Boolean get() = channelSampleCount > 0
+    val sampleCount: Int get() = channelSampleCount + discardedSampleCount
     val startedAt: Long? get() = allTimestamps().minOrNull()
     val endedAt: Long? get() = allTimestamps().maxOrNull()
 
@@ -89,7 +92,8 @@ data class MotionTelemetry(
         accelerometer.forEach { yield(it.timestampMillis) }
         gyroscope.forEach { yield(it.timestampMillis) }
         orientation.forEach { yield(it.timestampMillis) }
-        pressure.forEach { yield(it.timestampMillis) }
+        discardedStartedAt?.let { yield(it) }
+        discardedEndedAt?.let { yield(it) }
     }
 
     companion object {
@@ -105,7 +109,9 @@ data class MotionTelemetry(
                 accelerometer = values.flatMap { it.accelerometer }.sortedBy { it.timestampMillis },
                 gyroscope = values.flatMap { it.gyroscope }.sortedBy { it.timestampMillis },
                 orientation = values.flatMap { it.orientation }.sortedBy { it.timestampMillis },
-                pressure = values.flatMap { it.pressure }.sortedBy { it.timestampMillis },
+                discardedSampleCount = values.sumOf { it.discardedSampleCount },
+                discardedStartedAt = values.mapNotNull { it.discardedStartedAt }.minOrNull(),
+                discardedEndedAt = values.mapNotNull { it.discardedEndedAt }.maxOrNull(),
             )
         }
     }
@@ -115,14 +121,15 @@ data class MotionTelemetry(
 object TelemetryCodec {
     const val GPS_ENCODING_VERSION = 1
     const val LEGACY_MOTION_ENCODING_VERSION = 1
-    const val MOTION_ENCODING_VERSION = 2
+    /** Version 2 included a fourth sensor channel that is no longer retained. */
+    const val LEGACY_MULTICHANNEL_MOTION_ENCODING_VERSION = 2
+    const val MOTION_ENCODING_VERSION = 3
     private const val GPS_MAGIC = 0x464C4750 // FLGP
     private const val MOTION_MAGIC = 0x464C4D4F // FLMO
     private const val MAX_DECOMPRESSED_BYTES = 128 * 1024 * 1024
     private const val MAX_SAMPLES = 2_000_000
     private const val VECTOR_SCALE = 1_000.0
     private const val ROTATION_SCALE = 1_000_000.0
-    private const val PRESSURE_SCALE = 10_000.0
 
     fun encodeGps(points: List<TrackPointEntity>): EncodedTelemetry {
         require(points.isNotEmpty())
@@ -184,8 +191,7 @@ object TelemetryCodec {
         val accelerometer = telemetry.accelerometer.sortedBy { it.timestampMillis }
         val gyroscope = telemetry.gyroscope.sortedBy { it.timestampMillis }
         val orientation = telemetry.orientation.sortedBy { it.timestampMillis }
-        val pressure = telemetry.pressure.sortedBy { it.timestampMillis }
-        val sampleCount = accelerometer.size + gyroscope.size + orientation.size + pressure.size
+        val sampleCount = accelerometer.size + gyroscope.size + orientation.size
         require(sampleCount in 1..MAX_SAMPLES)
         val raw = ByteArrayOutputStream().also { bytes ->
             DataOutputStream(bytes).use { output ->
@@ -195,15 +201,24 @@ object TelemetryCodec {
                 writeVectorChannel(output, accelerometer)
                 writeVectorChannel(output, gyroscope)
                 writeRotationChannel(output, orientation)
-                writePressureChannel(output, pressure)
             }
         }.toByteArray()
+        val startedAt = listOfNotNull(
+            accelerometer.firstOrNull()?.timestampMillis,
+            gyroscope.firstOrNull()?.timestampMillis,
+            orientation.firstOrNull()?.timestampMillis,
+        ).minOrNull() ?: error("Motion telemetry is empty")
+        val endedAt = listOfNotNull(
+            accelerometer.lastOrNull()?.timestampMillis,
+            gyroscope.lastOrNull()?.timestampMillis,
+            orientation.lastOrNull()?.timestampMillis,
+        ).maxOrNull() ?: error("Motion telemetry is empty")
         return encoded(
             raw = raw,
             version = MOTION_ENCODING_VERSION,
             count = sampleCount,
-            startedAt = telemetry.startedAt ?: error("Motion telemetry is empty"),
-            endedAt = telemetry.endedAt ?: error("Motion telemetry is empty"),
+            startedAt = startedAt,
+            endedAt = endedAt,
         )
     }
 
@@ -236,7 +251,8 @@ object TelemetryCodec {
             require(input.readInt() == MOTION_MAGIC) { "Not FlightLog motion telemetry" }
             when (val version = input.readUnsignedByte()) {
                 LEGACY_MOTION_ENCODING_VERSION -> decodeLegacyMotion(input)
-                MOTION_ENCODING_VERSION -> decodeMotionV2(input)
+                LEGACY_MULTICHANNEL_MOTION_ENCODING_VERSION -> decodeLegacyMultichannelMotion(input)
+                MOTION_ENCODING_VERSION -> decodeMotionV3(input)
                 else -> error("Unsupported motion telemetry version $version")
             }.also { require(input.read() == -1) { "Trailing motion telemetry data" } }
         }
@@ -259,23 +275,42 @@ object TelemetryCodec {
         return MotionTelemetry(LEGACY_MOTION_ENCODING_VERSION, accelerometer = acceleration, gyroscope = gyroscope)
     }
 
-    private fun decodeMotionV2(input: DataInputStream): MotionTelemetry {
+    private fun decodeLegacyMultichannelMotion(input: DataInputStream): MotionTelemetry {
         val sourceOrdinal = input.readUnsignedByte()
         require(sourceOrdinal in OrientationSource.entries.indices) { "Invalid orientation source" }
         val accelerometer = readVectorChannel(input, 1_000f, MAX_SAMPLES)
         val gyroscope = readVectorChannel(input, 100f, MAX_SAMPLES - accelerometer.size)
         val orientation = readRotationChannel(input, MAX_SAMPLES - accelerometer.size - gyroscope.size)
-        val pressure = readPressureChannel(
+        val discarded = skipLegacyFourthChannel(
             input,
             MAX_SAMPLES - accelerometer.size - gyroscope.size - orientation.size,
         )
+        val telemetry = MotionTelemetry(
+            encodingVersion = LEGACY_MULTICHANNEL_MOTION_ENCODING_VERSION,
+            orientationSource = OrientationSource.entries[sourceOrdinal],
+            accelerometer = accelerometer,
+            gyroscope = gyroscope,
+            orientation = orientation,
+            discardedSampleCount = discarded.count,
+            discardedStartedAt = discarded.startedAt,
+            discardedEndedAt = discarded.endedAt,
+        )
+        require(telemetry.sampleCount in 1..MAX_SAMPLES) { "Invalid telemetry sample count" }
+        return telemetry
+    }
+
+    private fun decodeMotionV3(input: DataInputStream): MotionTelemetry {
+        val sourceOrdinal = input.readUnsignedByte()
+        require(sourceOrdinal in OrientationSource.entries.indices) { "Invalid orientation source" }
+        val accelerometer = readVectorChannel(input, 1_000f, MAX_SAMPLES)
+        val gyroscope = readVectorChannel(input, 100f, MAX_SAMPLES - accelerometer.size)
+        val orientation = readRotationChannel(input, MAX_SAMPLES - accelerometer.size - gyroscope.size)
         val telemetry = MotionTelemetry(
             encodingVersion = MOTION_ENCODING_VERSION,
             orientationSource = OrientationSource.entries[sourceOrdinal],
             accelerometer = accelerometer,
             gyroscope = gyroscope,
             orientation = orientation,
-            pressure = pressure,
         )
         require(telemetry.sampleCount in 1..MAX_SAMPLES) { "Invalid telemetry sample count" }
         return telemetry
@@ -333,27 +368,21 @@ object TelemetryCodec {
         }
     }
 
-    private fun writePressureChannel(output: DataOutputStream, samples: List<PressureSample>) {
-        writeUnsigned(output, samples.size.toLong())
-        var time = 0L
-        samples.forEach { sample ->
-            require(sample.pressureHpa.isFinite() && sample.pressureHpa in 300f..1_100f)
-            writeSigned(output, sample.timestampMillis - time)
-            writeUnsigned(output, (sample.pressureHpa * PRESSURE_SCALE).roundToInt().toLong())
-            time = sample.timestampMillis
-        }
-    }
-
-    private fun readPressureChannel(input: DataInputStream, maximumCount: Int): List<PressureSample> {
+    /** Consumes the removed fourth channel from v2 payloads without exposing it to the app. */
+    private fun skipLegacyFourthChannel(input: DataInputStream, maximumCount: Int): DiscardedChannel {
         val count = readOptionalCount(input, maximumCount)
         var time = 0L
-        return List(count) {
+        var startedAt: Long? = null
+        repeat(count) {
             time = nextTimestamp(input, time)
-            val pressure = (readUnsigned(input) / PRESSURE_SCALE).toFloat()
-            require(pressure.isFinite() && pressure in 300f..1_100f) { "Invalid pressure sample" }
-            PressureSample(time, pressure)
+            val value = readUnsigned(input)
+            require(value in 3_000_000L..11_000_000L) { "Invalid legacy sensor sample" }
+            if (startedAt == null) startedAt = time
         }
+        return DiscardedChannel(count, startedAt, time.takeIf { count > 0 })
     }
+
+    private data class DiscardedChannel(val count: Int, val startedAt: Long?, val endedAt: Long?)
 
     private fun encoded(raw: ByteArray, version: Int, count: Int, startedAt: Long, endedAt: Long): EncodedTelemetry {
         val payload = ByteArrayOutputStream().also { bytes ->
