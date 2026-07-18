@@ -233,6 +233,15 @@ fun TrailMap(
                 val options = MapLibreMapOptions.createFromAttributes(context).textureMode(true)
                 object : MapView(context, options) {
                     override fun onTouchEvent(event: MotionEvent): Boolean {
+                        // AndroidView does not automatically negotiate nested scrolling with
+                        // Compose. Keep a map gesture on the map so a vertical pan cannot turn
+                        // into a LazyColumn scroll (or fling the surrounding screen).
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> parent?.requestDisallowInterceptTouchEvent(true)
+                            MotionEvent.ACTION_UP,
+                            MotionEvent.ACTION_CANCEL,
+                            -> parent?.requestDisallowInterceptTouchEvent(false)
+                        }
                         val handled = handleBoundaryDrag(
                             view = this,
                             event = event,
