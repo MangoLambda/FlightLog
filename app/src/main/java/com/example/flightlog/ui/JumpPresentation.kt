@@ -6,13 +6,6 @@ import com.example.flightlog.tracking.MotionSample
 import kotlin.math.abs
 import kotlin.math.sqrt
 
-internal data class FlightArcPoint(
-    val progress: Double,
-    val elapsedSeconds: Double,
-    val distanceMeters: Double,
-    val heightMeters: Double,
-)
-
 internal data class AccelerationPoint(
     val millisFromTakeoff: Long,
     val magnitudeG: Double,
@@ -55,27 +48,6 @@ private fun midpoint(first: MapCoordinate?, second: MapCoordinate?): MapCoordina
         latitude = (first.latitude + second.latitude) / 2.0,
         longitude = (first.longitude + second.longitude) / 2.0,
     )
-
-internal fun flightArc(
-    flightSeconds: Double,
-    heightMeters: Double,
-    distanceMeters: Double,
-    pointCount: Int = 61,
-): List<FlightArcPoint> {
-    val flight = flightSeconds.takeIf { it.isFinite() }?.coerceIn(0.0, 2.5) ?: 0.0
-    val height = heightMeters.takeIf { it.isFinite() }?.coerceIn(0.0, 8.0) ?: 0.0
-    val distance = distanceMeters.takeIf { it.isFinite() }?.coerceIn(0.0, 50.0) ?: 0.0
-    val count = pointCount.coerceAtLeast(2)
-    return List(count) { index ->
-        val progress = index.toDouble() / (count - 1)
-        FlightArcPoint(
-            progress = progress,
-            elapsedSeconds = flight * progress,
-            distanceMeters = distance * progress,
-            heightMeters = 4.0 * height * progress * (1.0 - progress),
-        )
-    }
-}
 
 internal fun accelerationTrace(jump: JumpEventEntity, samples: List<MotionSample>): List<AccelerationPoint> =
     samples.sortedBy { it.timestampMillis }.map { sample ->

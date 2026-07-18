@@ -6,7 +6,6 @@ import com.example.flightlog.domain.JumpStatus
 import com.example.flightlog.domain.SensorQuality
 import com.example.flightlog.tracking.MotionSample
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class JumpPresentationTest {
@@ -54,25 +53,12 @@ class JumpPresentationTest {
         assertEquals(-73.51, coordinates.center?.longitude ?: 0.0, .0001)
     }
 
-    @Test fun modeledArcStartsAndEndsOnGroundWithMidpointAtRequestedHeight() {
-        val arc = flightArc(flightSeconds = .8, heightMeters = 1.5, distanceMeters = 6.0, pointCount = 3)
-
-        assertEquals(0.0, arc.first().heightMeters, .0001)
-        assertEquals(1.5, arc[1].heightMeters, .0001)
-        assertEquals(0.0, arc.last().heightMeters, .0001)
-        assertEquals(6.0, arc.last().distanceMeters, .0001)
-        assertEquals(.8, arc.last().elapsedSeconds, .0001)
-    }
-
-    @Test fun invalidArcInputsAreBoundedAndAccelerationIsRelativeToTakeoff() {
-        val arc = flightArc(Double.NaN, 99.0, -4.0, pointCount = 1)
+    @Test fun accelerationIsRelativeToTakeoff() {
         val jump = jump(id = 1, takeoffAt = 1_000)
         val acceleration = accelerationTrace(jump, listOf(
             MotionSample(900, 0f, 0f, 9.80665f, 0f, 0f, 0f),
         ))
 
-        assertEquals(2, arc.size)
-        assertTrue(arc.all { it.heightMeters in 0.0..8.0 && it.distanceMeters == 0.0 })
         assertEquals(-100, acceleration.single().millisFromTakeoff)
         assertEquals(1.0, acceleration.single().magnitudeG, .001)
     }

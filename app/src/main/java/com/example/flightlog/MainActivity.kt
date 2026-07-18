@@ -107,7 +107,6 @@ import com.example.flightlog.ui.IdealRunCard
 import com.example.flightlog.ui.TrailComparisonScreen
 import com.example.flightlog.ui.flightLogTopAppBarColors
 import com.example.flightlog.ui.accelerationTrace
-import com.example.flightlog.ui.flightArc
 import com.example.flightlog.ui.jumpNumbers
 import com.example.flightlog.ui.routeForRange
 import com.example.flightlog.ui.pointAtDistance
@@ -1151,7 +1150,6 @@ private fun JumpDetailScreen(
                     }
                 }
             }
-            item { FlightArcChart(displayedFlight, displayedHeight, displayedDistance, imperial) }
             item { SensorEvidenceCard(sensorAnalysis, imperial) }
             item {
                 AccelerationTraceChart(
@@ -1168,7 +1166,7 @@ private fun JumpDetailScreen(
                     DecimalField("Height (meters)", height) { height = it }
                     DecimalField("Distance (meters)", distance) { distance = it }
                     Text(
-                        "The arc is modeled from airtime, height, and distance; it is not a measured 3D phone path. The acceleration trace is measured by the phone.",
+                        "The acceleration trace is measured by the phone.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Button(
@@ -1176,54 +1174,6 @@ private fun JumpDetailScreen(
                         modifier = Modifier.fillMaxWidth().height(56.dp),
                     ) { Text("Save and confirm") }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FlightArcChart(flight: Double, height: Double, distance: Double, imperial: Boolean) {
-    val arc = remember(flight, height, distance) { flightArc(flight, height, distance) }
-    val lineColor = TrailCyan
-    val gridColor = MaterialTheme.colorScheme.outlineVariant
-    val textColor = MaterialTheme.colorScheme.onSurfaceVariant
-    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Modeled flight arc", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(
-                "${formatHeight(height, imperial)} high • ${formatDistance(distance, imperial)} long",
-                color = textColor,
-            )
-            Canvas(
-                Modifier.fillMaxWidth().height(170.dp).semantics {
-                    contentDescription = "Modeled flight arc, ${String.format(Locale.US, "%.2f", flight)} seconds, ${formatHeight(height, imperial)} high, ${formatDistance(distance, imperial)} long"
-                },
-            ) {
-                val left = 12.dp.toPx()
-                val right = size.width - 12.dp.toPx()
-                val top = 12.dp.toPx()
-                val ground = size.height - 12.dp.toPx()
-                drawLine(gridColor, Offset(left, ground), Offset(right, ground), strokeWidth = 2f)
-                val path = Path()
-                arc.forEachIndexed { index, point ->
-                    val x = left + (right - left) * point.progress.toFloat()
-                    val normalizedHeight = if (height > 0.0) point.heightMeters / height else 0.0
-                    val y = ground - (ground - top) * normalizedHeight.toFloat()
-                    if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
-                }
-                drawPath(path, lineColor, style = Stroke(width = 5f, cap = StrokeCap.Round))
-                drawCircle(Amber, radius = 6.dp.toPx(), center = Offset(left, ground))
-                drawCircle(
-                    Lime,
-                    radius = 6.dp.toPx(),
-                    center = Offset((left + right) / 2f, if (height > 0.0) top else ground),
-                )
-                drawCircle(Amber, radius = 6.dp.toPx(), center = Offset(right, ground))
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Takeoff", style = MaterialTheme.typography.labelMedium)
-                Text("Apex", style = MaterialTheme.typography.labelMedium)
-                Text("Landing", style = MaterialTheme.typography.labelMedium)
             }
         }
     }
@@ -1244,7 +1194,7 @@ private fun AccelerationTraceChart(
             Text("Measured phone acceleration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             if (trace.size < 2) {
                 Text(
-                    "Sensor trace unavailable for this ride. The modeled arc is still available.",
+                    "Sensor trace unavailable for this ride.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.semantics { contentDescription = "Measured sensor trace unavailable" },
                 )
