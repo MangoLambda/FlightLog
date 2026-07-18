@@ -5,8 +5,8 @@ import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.data.JumpMotionTraceEntity
 
 object JumpMotionTrace {
-    const val PRE_TAKEOFF_MILLIS = 750L
-    const val POST_LANDING_MILLIS = 350L
+    const val PRE_TAKEOFF_MILLIS = 10_000L
+    const val POST_LANDING_MILLIS = 10_000L
 
     fun window(jump: JumpEventEntity): LongRange =
         (jump.takeoffAt - PRE_TAKEOFF_MILLIS)..(jump.landingAt + POST_LANDING_MILLIS)

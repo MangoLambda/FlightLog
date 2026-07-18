@@ -19,10 +19,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -79,6 +81,7 @@ import com.example.flightlog.maps.TileCacheState
 import com.example.flightlog.maps.TileCacheStatus
 import com.example.flightlog.tracking.LiveRideState
 import com.example.flightlog.tracking.MotionTelemetry
+import com.example.flightlog.tracking.JumpMotionTrace
 import com.example.flightlog.tracking.JumpSensorAnalyzer
 import com.example.flightlog.tracking.TimedValue
 import com.example.flightlog.tracking.GpsStatus
@@ -1098,7 +1101,7 @@ private fun JumpDetailScreen(
 ) {
     if (jump == null) { EmptyCard("Jump unavailable", "Return to the ride review."); return }
     val nearbyPoints = remember(jump.id, points) {
-        val window = (jump.takeoffAt - 5_000L)..(jump.landingAt + 5_000L)
+        val window = (jump.takeoffAt - JumpMotionTrace.PRE_TAKEOFF_MILLIS)..(jump.landingAt + JumpMotionTrace.POST_LANDING_MILLIS)
         points.filter { it.recordedAt in window }.ifEmpty {
             points.sortedBy { abs(it.recordedAt - jump.takeoffAt) }.take(20).sortedBy { it.recordedAt }
         }
@@ -1181,6 +1184,11 @@ private fun AccelerationTraceChart(
     takeoffAt: Long,
     flightMillis: Long,
 ) {
+    val scrollState = rememberScrollState()
+    val chartStart = -JumpMotionTrace.PRE_TAKEOFF_MILLIS
+    val chartEnd = flightMillis + JumpMotionTrace.POST_LANDING_MILLIS
+    val chartDurationMillis = (chartEnd - chartStart).coerceAtLeast(1L)
+    val chartWidth = (chartDurationMillis / 1_000f * 48f).dp
     val lineColor = Amber
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val flightColor = TrailCyan.copy(alpha = .14f)
@@ -1198,54 +1206,53 @@ private fun AccelerationTraceChart(
                 val minimumG = minOf(-1.25, verticalG.minOfOrNull { it.value } ?: 0.0)
                 val maximumG = maxOf(trace.maxOf { it.magnitudeG }, verticalG.maxOfOrNull { it.value } ?: 0.0, 2.0)
                 val pump = trace.filter { it.millisFromTakeoff <= 0L }.maxByOrNull { it.magnitudeG }
-                Canvas(
-                    Modifier.fillMaxWidth().height(140.dp).semantics {
-                        contentDescription = "Measured acceleration from pump through landing; peak ${String.format(Locale.US, "%.1f", maximumG)} g"
-                    },
-                ) {
-                    val start = minOf(trace.first().millisFromTakeoff, verticalG.firstOrNull()?.timestampMillis ?: Long.MAX_VALUE)
-                    val end = maxOf(trace.last().millisFromTakeoff, verticalG.lastOrNull()?.timestampMillis ?: Long.MIN_VALUE).coerceAtLeast(start + 1)
-                    fun x(milliseconds: Long) = ((milliseconds - start).toFloat() / (end - start)) * size.width
-                    fun y(valueG: Double) = ((maximumG - valueG) / (maximumG - minimumG) * size.height).toFloat()
-                    val takeoffX = x(0L).coerceIn(0f, size.width)
-                    val landingX = x(flightMillis).coerceIn(0f, size.width)
-                    drawRect(flightColor, topLeft = Offset(takeoffX, 0f), size = androidx.compose.ui.geometry.Size((landingX - takeoffX).coerceAtLeast(0f), size.height))
-                    drawLine(gridColor, Offset(0f, y(1.0)), Offset(size.width, y(1.0)), strokeWidth = 2f)
-                    if (verticalG.isNotEmpty()) drawLine(gridColor, Offset(0f, y(0.0)), Offset(size.width, y(0.0)), strokeWidth = 2f)
-                    val path = Path()
-                    trace.forEachIndexed { index, point ->
-                        val px = x(point.millisFromTakeoff)
-                        val py = y(point.magnitudeG)
-                        if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
-                    }
-                    drawPath(path, lineColor, style = Stroke(width = 3f, cap = StrokeCap.Round))
-                    if (verticalG.size >= 2) {
-                        val verticalPath = Path()
-                        verticalG.forEachIndexed { index, point ->
-                            val px = x(point.timestampMillis)
-                            val py = y(point.value)
-                            if (index == 0) verticalPath.moveTo(px, py) else verticalPath.lineTo(px, py)
+                Column(Modifier.horizontalScroll(scrollState)) {
+                    Canvas(
+                        Modifier.width(chartWidth).height(140.dp).semantics {
+                            contentDescription = "Measured acceleration from 10 seconds before takeoff through 10 seconds after landing; peak ${String.format(Locale.US, "%.1f", maximumG)} g"
+                        },
+                    ) {
+                        fun x(milliseconds: Long) = ((milliseconds - chartStart).toFloat() / chartDurationMillis) * size.width
+                        fun y(valueG: Double) = ((maximumG - valueG) / (maximumG - minimumG) * size.height).toFloat()
+                        val takeoffX = x(0L).coerceIn(0f, size.width)
+                        val landingX = x(flightMillis).coerceIn(0f, size.width)
+                        drawRect(flightColor, topLeft = Offset(takeoffX, 0f), size = androidx.compose.ui.geometry.Size((landingX - takeoffX).coerceAtLeast(0f), size.height))
+                        drawLine(gridColor, Offset(0f, y(1.0)), Offset(size.width, y(1.0)), strokeWidth = 2f)
+                        if (verticalG.isNotEmpty()) drawLine(gridColor, Offset(0f, y(0.0)), Offset(size.width, y(0.0)), strokeWidth = 2f)
+                        val path = Path()
+                        trace.forEachIndexed { index, point ->
+                            val px = x(point.millisFromTakeoff)
+                            val py = y(point.magnitudeG)
+                            if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
                         }
-                        drawPath(verticalPath, TrailCyan, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                        drawPath(path, lineColor, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                        if (verticalG.size >= 2) {
+                            val verticalPath = Path()
+                            verticalG.forEachIndexed { index, point ->
+                                val px = x(point.timestampMillis)
+                                val py = y(point.value)
+                                if (index == 0) verticalPath.moveTo(px, py) else verticalPath.lineTo(px, py)
+                            }
+                            drawPath(verticalPath, TrailCyan, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                        }
+                        pump?.let { point ->
+                            drawCircle(
+                                Lime,
+                                radius = 5.dp.toPx(),
+                                center = Offset(x(point.millisFromTakeoff), y(point.magnitudeG)),
+                            )
+                        }
+                        drawLine(TrailCyan, Offset(takeoffX, 0f), Offset(takeoffX, size.height), strokeWidth = 2f)
+                        drawLine(TrailCyan, Offset(landingX, 0f), Offset(landingX, size.height), strokeWidth = 2f)
                     }
-                    pump?.let { point ->
-                        drawCircle(
-                            Lime,
-                            radius = 5.dp.toPx(),
-                            center = Offset(
-                                x(point.millisFromTakeoff),
-                                y(point.magnitudeG),
-                            ),
-                        )
+                    Row(Modifier.width(chartWidth), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("10s before", style = MaterialTheme.typography.labelMedium)
+                        Text("Takeoff", style = MaterialTheme.typography.labelMedium)
+                        Text("Landing", style = MaterialTheme.typography.labelMedium)
+                        Text("10s after", style = MaterialTheme.typography.labelMedium)
                     }
-                    drawLine(TrailCyan, Offset(takeoffX, 0f), Offset(takeoffX, size.height), strokeWidth = 2f)
-                    drawLine(TrailCyan, Offset(landingX, 0f), Offset(landingX, size.height), strokeWidth = 2f)
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Pump", style = MaterialTheme.typography.labelMedium)
-                    Text("Takeoff", style = MaterialTheme.typography.labelMedium)
-                    Text("Landing", style = MaterialTheme.typography.labelMedium)
-                }
+                Text("Swipe horizontally to inspect the full 10-second context on either side.", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (verticalG.isNotEmpty()) {
                     Text("Amber: total force • cyan: orientation-corrected vertical", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
