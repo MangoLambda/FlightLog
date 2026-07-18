@@ -512,15 +512,15 @@ private fun addRideLayers(style: Style, context: Context) {
     style.addLayer(LineLayer("flightlog-comparison-route-line", COMPARISON_ROUTE_SOURCE).withProperties(
         lineColor("#FFB84D"), lineWidth(4f), lineDasharray(arrayOf(2f, 2f)),
     ))
-    style.addImage(JUMP_TAKEOFF_IMAGE, boundaryHandleBitmap(context, Color.rgb(183, 243, 74)))
+    style.addImage(JUMP_TAKEOFF_IMAGE, jumpEndpointBitmap(context, Color.rgb(183, 243, 74)))
     style.addSource(GeoJsonSource(JUMP_TAKEOFF_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(SymbolLayer(JUMP_TAKEOFF_LAYER, JUMP_TAKEOFF_SOURCE).withProperties(
-        iconImage(JUMP_TAKEOFF_IMAGE), iconSize(.8f), iconAllowOverlap(true),
+        iconImage(JUMP_TAKEOFF_IMAGE), iconAllowOverlap(true),
     ))
-    style.addImage(JUMP_LANDING_IMAGE, boundaryHandleBitmap(context, Color.rgb(255, 184, 77)))
+    style.addImage(JUMP_LANDING_IMAGE, jumpEndpointBitmap(context, Color.rgb(255, 184, 77)))
     style.addSource(GeoJsonSource(JUMP_LANDING_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(SymbolLayer(JUMP_LANDING_LAYER, JUMP_LANDING_SOURCE).withProperties(
-        iconImage(JUMP_LANDING_IMAGE), iconSize(.8f), iconAllowOverlap(true),
+        iconImage(JUMP_LANDING_IMAGE), iconAllowOverlap(true),
     ))
     style.addSource(GeoJsonSource(JUMP_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(CircleLayer(JUMP_SELECTED_LAYER, JUMP_SOURCE).withProperties(
@@ -744,6 +744,23 @@ private fun boundaryHandleBitmap(context: Context, fillColor: Int): Bitmap {
         }
         canvas.drawLine(size * .34f, size * .44f, size * .66f, size * .44f, gripPaint)
         canvas.drawLine(size * .34f, size * .56f, size * .66f, size * .56f, gripPaint)
+    }
+}
+
+private fun jumpEndpointBitmap(context: Context, fillColor: Int): Bitmap {
+    val density = context.resources.displayMetrics.density
+    val size = (24 * density).toInt()
+    return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
+        val canvas = Canvas(bitmap)
+        val center = size / 2f
+        canvas.drawCircle(center, center, size * .48f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(16, 21, 18)
+            style = Paint.Style.FILL
+        })
+        canvas.drawCircle(center, center, size * .34f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = fillColor
+            style = Paint.Style.FILL
+        })
     }
 }
 
