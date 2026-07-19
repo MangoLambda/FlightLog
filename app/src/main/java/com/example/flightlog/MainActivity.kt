@@ -111,6 +111,8 @@ import com.example.flightlog.ui.routeForRange
 import com.example.flightlog.ui.pointAtDistance
 import com.example.flightlog.ui.prePumpSpeedMetersPerSecond
 import com.example.flightlog.ui.pumpAccelerationPoint
+import com.example.flightlog.ui.flightGpsSpeedSamples
+import com.example.flightlog.ui.GpsSpeedPoint
 import com.example.flightlog.maps.MapStyle
 import com.example.flightlog.ui.theme.Amber
 import com.example.flightlog.ui.theme.FlightLogTheme
@@ -1112,6 +1114,7 @@ private fun JumpDetailScreen(
     val prePumpSpeed = remember(jump.id, acceleration, points) {
         prePumpSpeedMetersPerSecond(jump, acceleration, points)
     }
+    val flightSpeeds = remember(jump.id, points) { flightGpsSpeedSamples(jump, points) }
     val sensorAnalysis = remember(jump, motion, mountingMode) { JumpSensorAnalyzer.analyze(jump, motion, mountingMode) }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -1160,12 +1163,43 @@ private fun JumpDetailScreen(
                 }
             }
             item {
+                FlightGpsSpeedCard(flightSpeeds, imperial)
+            }
+            item {
                 AccelerationTraceChart(
                     trace = acceleration,
                     verticalTrace = sensorAnalysis.worldVerticalAcceleration,
                     takeoffAt = jump.takeoffAt,
                     flightMillis = jump.landingAt - jump.takeoffAt,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FlightGpsSpeedCard(samples: List<GpsSpeedPoint>, imperial: Boolean) {
+    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("GPS speed during flight", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (samples.isEmpty()) {
+                Text(
+                    "No GPS speed sample was recorded between takeoff and landing.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    "${samples.size} sample${if (samples.size == 1) "" else "s"} from takeoff through landing",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                samples.forEachIndexed { index, sample ->
+                    if (index > 0) HorizontalDivider()
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(String.format(Locale.US, "+%.3f s", sample.millisFromTakeoff / 1_000.0))
+                        Text(formatSpeed(sample.speedMps, imperial), fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
     }

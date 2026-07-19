@@ -97,6 +97,22 @@ class JumpPresentationTest {
         assertEquals(-200L, pumpAccelerationPoint(acceleration)?.millisFromTakeoff)
     }
 
+    @Test fun flightGpsSpeedsIncludeEverySampleFromTakeoffThroughLanding() {
+        val jump = jump(id = 1, takeoffAt = 10_000)
+        val points = listOf(
+            trackPoint(10_401, 45.0, -73.0, speedMps = 9.0),
+            trackPoint(9_999, 45.0, -73.0, speedMps = 1.0),
+            trackPoint(10_200, 45.0, -73.0, speedMps = 7.0),
+            trackPoint(10_000, 45.0, -73.0, speedMps = 6.0),
+            trackPoint(10_400, 45.0, -73.0, speedMps = 8.0),
+        )
+
+        val samples = flightGpsSpeedSamples(jump, points)
+
+        assertEquals(listOf(0L, 200L, 400L), samples.map { it.millisFromTakeoff })
+        assertEquals(listOf(6.0, 7.0, 8.0), samples.map { it.speedMps })
+    }
+
     private fun jump(id: Long, takeoffAt: Long, status: JumpStatus = JumpStatus.PENDING) = JumpEventEntity(
         id = id,
         rideId = 1,

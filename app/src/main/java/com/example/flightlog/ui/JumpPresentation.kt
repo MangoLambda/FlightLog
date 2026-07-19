@@ -11,6 +11,11 @@ internal data class AccelerationPoint(
     val magnitudeG: Double,
 )
 
+internal data class GpsSpeedPoint(
+    val millisFromTakeoff: Long,
+    val speedMps: Double,
+)
+
 internal data class MapCoordinate(val latitude: Double, val longitude: Double)
 
 internal data class JumpMapCoordinates(
@@ -58,6 +63,13 @@ internal fun accelerationTrace(jump: JumpEventEntity, samples: List<MotionSample
         )
         AccelerationPoint(sample.timestampMillis - jump.takeoffAt, magnitude / STANDARD_GRAVITY)
     }
+
+internal fun flightGpsSpeedSamples(jump: JumpEventEntity, points: List<TrackPointEntity>): List<GpsSpeedPoint> =
+    points.asSequence()
+        .filter { it.recordedAt in jump.takeoffAt..jump.landingAt }
+        .sortedBy { it.recordedAt }
+        .map { GpsSpeedPoint(it.recordedAt - jump.takeoffAt, it.speedMps) }
+        .toList()
 
 internal fun prePumpSpeedMetersPerSecond(
     jump: JumpEventEntity,
