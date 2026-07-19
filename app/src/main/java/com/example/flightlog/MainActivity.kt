@@ -110,6 +110,7 @@ import com.example.flightlog.ui.jumpNumbers
 import com.example.flightlog.ui.routeForRange
 import com.example.flightlog.ui.pointAtDistance
 import com.example.flightlog.ui.prePumpSpeedMetersPerSecond
+import com.example.flightlog.ui.pumpAccelerationPoint
 import com.example.flightlog.maps.MapStyle
 import com.example.flightlog.ui.theme.Amber
 import com.example.flightlog.ui.theme.FlightLogTheme
@@ -1217,7 +1218,7 @@ private fun AccelerationTraceChart(
                 val verticalG = verticalTrace.map { TimedValue(it.timestampMillis - takeoffAt, it.value / 9.80665) }
                 val minimumG = minOf(-1.25, verticalG.minOfOrNull { it.value } ?: 0.0)
                 val maximumG = maxOf(trace.maxOf { it.magnitudeG }, verticalG.maxOfOrNull { it.value } ?: 0.0, 2.0)
-                val pump = trace.filter { it.millisFromTakeoff <= 0L }.maxByOrNull { it.magnitudeG }
+                val pump = pumpAccelerationPoint(trace)
                 Column(Modifier.horizontalScroll(scrollState)) {
                     Canvas(
                         Modifier.width(chartWidth).height(140.dp).semantics {

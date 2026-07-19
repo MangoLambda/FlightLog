@@ -87,6 +87,16 @@ class JumpPresentationTest {
         assertEquals(null, prePumpSpeedMetersPerSecond(jump, acceleration, points))
     }
 
+    @Test fun pumpMarkerIgnoresEarlierAccelerationSpikes() {
+        val acceleration = listOf(
+            AccelerationPoint(-5_000, 8.0),
+            AccelerationPoint(-200, 2.8),
+            AccelerationPoint(-20, 1.0),
+        )
+
+        assertEquals(-200L, pumpAccelerationPoint(acceleration)?.millisFromTakeoff)
+    }
+
     private fun jump(id: Long, takeoffAt: Long, status: JumpStatus = JumpStatus.PENDING) = JumpEventEntity(
         id = id,
         rideId = 1,

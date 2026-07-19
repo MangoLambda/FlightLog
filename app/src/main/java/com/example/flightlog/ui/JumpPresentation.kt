@@ -64,15 +64,15 @@ internal fun prePumpSpeedMetersPerSecond(
     acceleration: List<AccelerationPoint>,
     points: List<TrackPointEntity>,
 ): Double? {
-    val pump = acceleration
-        .filter { it.millisFromTakeoff in -250L..0L }
-        .maxByOrNull { it.magnitudeG }
-        ?: return null
+    val pump = pumpAccelerationPoint(acceleration) ?: return null
     val pumpAt = jump.takeoffAt + pump.millisFromTakeoff
     return points.asSequence()
         .filter { it.recordedAt < pumpAt && pumpAt - it.recordedAt <= 5_000L }
         .maxByOrNull { it.recordedAt }
         ?.speedMps
 }
+
+internal fun pumpAccelerationPoint(acceleration: List<AccelerationPoint>): AccelerationPoint? =
+    acceleration.filter { it.millisFromTakeoff in -250L..0L }.maxByOrNull { it.magnitudeG }
 
 private const val STANDARD_GRAVITY = 9.80665
