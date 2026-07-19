@@ -1152,6 +1152,7 @@ private fun ReviewScreen(
                         number = numbers.getValue(jump.id),
                         imperial = imperial,
                         peakGForce = peakGForces[jump.id],
+                        gpsConfirmed = flightGpsSpeedSamples(jump, points).isNotEmpty(),
                         selected = jump.id == selectedJumpId,
                         onSelect = { onSelectJump(jump.id) },
                         onOpen = { onOpenJump(jump.id) },
@@ -1169,6 +1170,7 @@ private fun JumpCard(
     number: Int,
     imperial: Boolean,
     peakGForce: Double?,
+    gpsConfirmed: Boolean,
     selected: Boolean,
     onSelect: () -> Unit,
     onOpen: () -> Unit,
@@ -1183,7 +1185,17 @@ private fun JumpCard(
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Jump $number", fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Jump $number", fontWeight = FontWeight.Bold)
+                    if (gpsConfirmed) {
+                        Icon(
+                            imageVector = Icons.Filled.Star,
+                            contentDescription = "GPS flight speed confirmed",
+                            tint = Lime,
+                            modifier = Modifier.size(18.dp).padding(start = 2.dp),
+                        )
+                    }
+                }
                 SuggestionChip(onClick = {}, label = { Text("${jump.confidence}% confidence") })
             }
             Text("${String.format(Locale.US, "%.2fs", jump.displayFlightSeconds)} • ${formatHeight(jump.displayHeightMeters, imperial)} high • ${formatDistance(jump.displayDistanceMeters, imperial)} long")
@@ -1350,7 +1362,7 @@ private fun JumpDetailMetric(
                 Icon(
                     imageVector = Icons.Filled.Star,
                     contentDescription = "GPS flight speed confirmed",
-                    tint = Color(0xFF2EAF5D),
+                    tint = Lime,
                     modifier = Modifier.size(18.dp).padding(start = 2.dp),
                 )
             }
