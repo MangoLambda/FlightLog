@@ -31,5 +31,19 @@ class JumpMotionTraceTest {
         assertEquals(telemetry, decoded)
     }
 
+    @Test fun mergeAddsWiderRawContextWithoutDuplicatingStoredSamples() {
+        val jump = JumpEventEntity(
+            id = 7, rideId = 1, takeoffAt = 20_000, landingAt = 20_500,
+            estimatedFlightSeconds = .5, estimatedHeightMeters = .3, estimatedDistanceMeters = 2.0,
+            confidence = 80, sensorQuality = SensorQuality.FULL,
+        )
+        val stored = MotionTelemetry(accelerometer = listOf(sample(19_500), sample(20_000), sample(20_500)))
+        val raw = MotionTelemetry(accelerometer = listOf(sample(10_000), sample(20_000), sample(30_500)))
+
+        val merged = JumpMotionTrace.merge(jump, listOf(stored, raw))
+
+        assertEquals(listOf(10_000L, 19_500L, 20_000L, 20_500L, 30_500L), merged.accelerometer.map { it.timestampMillis })
+    }
+
     private fun sample(timestamp: Long) = Vector3Sample(timestamp, 1f, 2f, 3f)
 }

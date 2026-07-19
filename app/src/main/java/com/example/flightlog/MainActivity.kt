@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
@@ -1188,7 +1189,18 @@ private fun AccelerationTraceChart(
     val chartStart = -JumpMotionTrace.PRE_TAKEOFF_MILLIS
     val chartEnd = flightMillis + JumpMotionTrace.POST_LANDING_MILLIS
     val chartDurationMillis = (chartEnd - chartStart).coerceAtLeast(1L)
-    val chartWidth = (chartDurationMillis / 1_000f * 48f).dp
+    val chartWidth = (chartDurationMillis / 1_000f * JUMP_CHART_DP_PER_SECOND).dp
+    val density = LocalDensity.current
+    LaunchedEffect(scrollState.maxValue, chartWidth, flightMillis) {
+        if (scrollState.maxValue > 0) {
+            val contentWidth = with(density) { chartWidth.roundToPx() }
+            val viewportWidth = contentWidth - scrollState.maxValue
+            val flightCenter = with(density) {
+                ((JumpMotionTrace.PRE_TAKEOFF_MILLIS + flightMillis / 2f) / 1_000f * JUMP_CHART_DP_PER_SECOND).dp.roundToPx()
+            }
+            scrollState.scrollTo((flightCenter - viewportWidth / 2).coerceIn(0, scrollState.maxValue))
+        }
+    }
     val lineColor = Amber
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val flightColor = TrailCyan.copy(alpha = .14f)
@@ -1245,11 +1257,26 @@ private fun AccelerationTraceChart(
                         drawLine(TrailCyan, Offset(takeoffX, 0f), Offset(takeoffX, size.height), strokeWidth = 2f)
                         drawLine(TrailCyan, Offset(landingX, 0f), Offset(landingX, size.height), strokeWidth = 2f)
                     }
-                    Row(Modifier.width(chartWidth), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("10s before", style = MaterialTheme.typography.labelMedium)
-                        Text("Takeoff", style = MaterialTheme.typography.labelMedium)
-                        Text("Landing", style = MaterialTheme.typography.labelMedium)
-                        Text("10s after", style = MaterialTheme.typography.labelMedium)
+                    Box(Modifier.width(chartWidth).height(42.dp)) {
+                        Text("10s before", style = MaterialTheme.typography.labelMedium, modifier = Modifier.align(Alignment.TopStart))
+                        Text(
+                            "Takeoff",
+                            style = MaterialTheme.typography.labelMedium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.width(64.dp).offset(
+                                x = (JumpMotionTrace.PRE_TAKEOFF_MILLIS / 1_000f * JUMP_CHART_DP_PER_SECOND - 32f).dp,
+                            ),
+                        )
+                        Text(
+                            "Landing",
+                            style = MaterialTheme.typography.labelMedium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.width(64.dp).offset(
+                                x = ((JumpMotionTrace.PRE_TAKEOFF_MILLIS + flightMillis) / 1_000f * JUMP_CHART_DP_PER_SECOND - 32f).dp,
+                                y = 20.dp,
+                            ),
+                        )
+                        Text("10s after", style = MaterialTheme.typography.labelMedium, modifier = Modifier.align(Alignment.BottomEnd))
                     }
                 }
                 Text("Swipe horizontally to inspect the full 10-second context on either side.", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1260,6 +1287,8 @@ private fun AccelerationTraceChart(
         }
     }
 }
+
+private const val JUMP_CHART_DP_PER_SECOND = 200f
 
 @Composable
 private fun TrailsScreen(

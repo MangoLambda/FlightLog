@@ -20,6 +20,19 @@ object JumpMotionTrace {
         )
     }
 
+    fun merge(jump: JumpEventEntity, telemetry: Iterable<MotionTelemetry>): MotionTelemetry {
+        val values = telemetry.filter { it.hasUsableSamples }
+        if (values.isEmpty()) return MotionTelemetry.EMPTY
+        return samples(jump, MotionTelemetry(
+            encodingVersion = values.maxOf { it.encodingVersion },
+            orientationSource = values.firstOrNull { it.orientationSource != OrientationSource.NONE }?.orientationSource
+                ?: OrientationSource.NONE,
+            accelerometer = values.flatMap { it.accelerometer }.distinctBy { it.timestampMillis }.sortedBy { it.timestampMillis },
+            gyroscope = values.flatMap { it.gyroscope }.distinctBy { it.timestampMillis }.sortedBy { it.timestampMillis },
+            orientation = values.flatMap { it.orientation }.distinctBy { it.timestampMillis }.sortedBy { it.timestampMillis },
+        ))
+    }
+
     fun decode(trace: JumpMotionTraceEntity): MotionTelemetry =
         TelemetryCodec.decodeMotion(trace.payload, trace.checksum)
 

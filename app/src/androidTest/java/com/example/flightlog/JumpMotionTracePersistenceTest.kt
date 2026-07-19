@@ -52,7 +52,7 @@ class JumpMotionTracePersistenceTest {
         val trace = dao.jumpMotionTrace(jumpId)
         assertNotNull(trace)
         assertEquals(
-            listOf(250L, 1_000L, 1_500L, 1_850L),
+            listOf(100L, 250L, 1_000L, 1_500L, 1_850L, 1_900L),
             JumpMotionTrace.decode(trace!!).accelerometer.map { it.timestampMillis },
         )
         database.close()

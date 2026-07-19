@@ -37,7 +37,11 @@ class RideRepository(private val database: FlightLogDatabase) {
     }
     fun jumps(rideId: Long) = dao.observeJumpsForRide(rideId)
     fun jumpMotion(jump: JumpEventEntity): Flow<MotionTelemetry> = dao.observeJumpMotionTrace(jump.id)
-        .map { trace -> trace?.let(JumpMotionTrace::decode) ?: JumpMotionTrace.loadRaw(dao, jump) }
+        .map { trace ->
+            val persisted = trace?.let(JumpMotionTrace::decode)
+            val raw = runCatching { JumpMotionTrace.loadRaw(dao, jump) }.getOrDefault(MotionTelemetry.EMPTY)
+            JumpMotionTrace.merge(jump, listOfNotNull(persisted, raw))
+        }
         .catch { emit(MotionTelemetry.EMPTY) }
     fun stops(rideId: Long) = dao.observeStopEventsForRide(rideId)
     suspend fun setJumpStatus(id: Long, status: JumpStatus) = dao.setJumpStatus(id, status)
