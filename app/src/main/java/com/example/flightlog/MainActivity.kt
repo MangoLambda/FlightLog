@@ -106,6 +106,7 @@ import com.example.flightlog.ui.IdealRunCard
 import com.example.flightlog.ui.TrailComparisonScreen
 import com.example.flightlog.ui.flightLogTopAppBarColors
 import com.example.flightlog.ui.accelerationTrace
+import com.example.flightlog.ui.PEAK_G_FILTER_MILLIS
 import com.example.flightlog.ui.jumpNumbers
 import com.example.flightlog.ui.routeForRange
 import com.example.flightlog.ui.pointAtDistance
@@ -163,6 +164,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val points by vm.selectedPoints.collectAsStateWithLifecycle()
     val selectedJumps by vm.selectedRideJumps.collectAsStateWithLifecycle()
     val selectedJumpMotion by vm.selectedJumpMotion.collectAsStateWithLifecycle()
+    val selectedRidePeakGForces by vm.selectedRidePeakGForces.collectAsStateWithLifecycle()
     val selectedStops by vm.selectedRideStops.collectAsStateWithLifecycle()
     val imperial by vm.imperial.collectAsStateWithLifecycle()
     val recordingSettings by vm.recordingSettings.collectAsStateWithLifecycle()
@@ -373,6 +375,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         ride = rides.firstOrNull { it.id == selectedRideId },
                         points = points,
                         jumps = selectedJumps,
+                        peakGForces = selectedRidePeakGForces,
                         stops = selectedStops,
                         mapApiKey = effectiveMapApiKey,
                         mapStyle = mapStyle,
@@ -880,6 +883,7 @@ private fun ReviewScreen(
     ride: RideEntity?,
     points: List<com.example.flightlog.data.TrackPointEntity>,
     jumps: List<JumpEventEntity>,
+    peakGForces: Map<Long, Double>,
     stops: List<StopEventEntity>,
     mapApiKey: String,
     mapStyle: MapStyle,
@@ -983,6 +987,7 @@ private fun ReviewScreen(
                 fitRoute = true,
                 selectedJumpId = selectedJumpId,
                 onJumpClick = onSelectJump,
+                showSpeedGradient = true,
             )
             if (points.isEmpty()) {
                 Box(
@@ -1021,8 +1026,16 @@ private fun ReviewScreen(
                 }
             } else {
                 item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         Metric("DISTANCE", formatDistance(ride.distanceMeters, imperial))
+                        Metric("TOP SPEED", formatSpeed(ride.maxSpeedMps, imperial))
+                        Metric(
+                            "AVG SPEED",
+                            averageMovingSpeedMps(ride.distanceMeters, ride.movingTimeMillis)
+                                ?.let { formatSpeed(it, imperial) } ?: "—",
+                        )
+                    }
+                    Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                         Metric("JUMPS", jumps.count { it.status == JumpStatus.CONFIRMED }.toString())
                         Metric("AIRTIME", String.format(Locale.US, "%.1fs", jumps.filter { it.status == JumpStatus.CONFIRMED }.sumOf { it.displayFlightSeconds }))
                     }
@@ -1038,6 +1051,7 @@ private fun ReviewScreen(
                         jump = jump,
                         number = numbers.getValue(jump.id),
                         imperial = imperial,
+                        peakGForce = peakGForces[jump.id],
                         selected = jump.id == selectedJumpId,
                         onSelect = { onSelectJump(jump.id) },
                         onOpen = { onOpenJump(jump.id) },
@@ -1054,6 +1068,7 @@ private fun JumpCard(
     jump: JumpEventEntity,
     number: Int,
     imperial: Boolean,
+    peakGForce: Double?,
     selected: Boolean,
     onSelect: () -> Unit,
     onOpen: () -> Unit,
@@ -1072,6 +1087,13 @@ private fun JumpCard(
                 SuggestionChip(onClick = {}, label = { Text("${jump.confidence}% confidence") })
             }
             Text("${String.format(Locale.US, "%.2fs", jump.displayFlightSeconds)} • ${formatHeight(jump.displayHeightMeters, imperial)} high • ${formatDistance(jump.displayDistanceMeters, imperial)} long")
+            peakGForce?.let {
+                Text(
+                    "Peak ${String.format(Locale.US, "%.1f g", it)} • ${PEAK_G_FILTER_MILLIS} ms filtered",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
             when (jump.status) {
                 JumpStatus.PENDING -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2167,6 +2189,10 @@ private fun sendRideAction(context: Context, action: String) {
 private fun formatSpeed(mps: Double, imperial: Boolean): String = if (imperial) {
     String.format(Locale.US, "%.1f mph", mps * 2.23694)
 } else String.format(Locale.US, "%.1f km/h", mps * 3.6)
+
+internal fun averageMovingSpeedMps(distanceMeters: Double, movingTimeMillis: Long): Double? =
+    if (movingTimeMillis <= 0L || !distanceMeters.isFinite() || distanceMeters < 0.0) null
+    else distanceMeters / (movingTimeMillis / 1_000.0)
 
 private fun formatDistance(meters: Double, imperial: Boolean): String = if (imperial) {
     if (meters < 1_609.344) String.format(Locale.US, "%.0f ft", meters * 3.28084) else String.format(Locale.US, "%.2f mi", meters / 1_609.344)

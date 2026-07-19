@@ -13,11 +13,16 @@ import android.net.NetworkCapabilities
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
@@ -87,6 +92,7 @@ import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.roundToInt
 
 private const val ROUTE_SOURCE = "flightlog-route"
 private const val COMPARISON_ROUTE_SOURCE = "flightlog-comparison-route"
@@ -144,6 +150,7 @@ fun TrailMap(
     onBoundaryEndChange: ((TrackPointEntity) -> Unit)? = null,
     selectedJumpId: Long? = null,
     onJumpClick: ((Long) -> Unit)? = null,
+    showSpeedGradient: Boolean = false,
 ) {
     val context = LocalContext.current
     val routePaddingPixels = with(LocalDensity.current) { 96.dp.roundToPx() }
@@ -179,6 +186,7 @@ fun TrailMap(
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                 selectedJumpId = selectedJumpId,
+                showSpeedGradient = showSpeedGradient,
             )
         }
     }
@@ -197,6 +205,7 @@ fun TrailMap(
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                 selectedJumpId = selectedJumpId,
+                showSpeedGradient = showSpeedGradient,
             )
         }
     }
@@ -211,6 +220,7 @@ fun TrailMap(
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                 selectedJumpId = selectedJumpId,
+                showSpeedGradient = showSpeedGradient,
             )
         }
     }
@@ -311,9 +321,13 @@ fun TrailMap(
                     boundaryStart = boundaryStart,
                     boundaryEnd = boundaryEnd,
                     selectedJumpId = selectedJumpId,
+                    showSpeedGradient = showSpeedGradient,
                 )
             },
         )
+        if (showSpeedGradient && points.size >= 2) {
+            SpeedGradientLegend(Modifier.align(Alignment.BottomCenter).padding(12.dp))
+        }
 
         if (showRider && points.isNotEmpty()) {
             FloatingActionButton(
@@ -377,6 +391,69 @@ fun TrailMap(
             tileActionListener.value?.let { mapView.value?.removeOnTileActionListener(it) }
             mapClickListener.value?.let { listener -> map?.removeOnMapClickListener(listener) }
             mapView.value?.onDestroy()
+        }
+    }
+}
+
+private val speedColorStops = listOf(
+    5.0 to intArrayOf(217, 247, 255),
+    15.0 to intArrayOf(22, 139, 255),
+    30.0 to intArrayOf(69, 208, 90),
+    45.0 to intArrayOf(255, 216, 74),
+    60.0 to intArrayOf(244, 67, 54),
+    70.0 to intArrayOf(43, 5, 5),
+)
+
+internal fun speedColorHex(speedKph: Double): String {
+    val speed = speedKph.takeIf(Double::isFinite)?.coerceIn(5.0, 70.0) ?: 5.0
+    val upperIndex = speedColorStops.indexOfFirst { speed <= it.first }.coerceAtLeast(0)
+    val upper = speedColorStops[upperIndex]
+    if (upperIndex == 0) return rgbHex(upper.second)
+    val lower = speedColorStops[upperIndex - 1]
+    val fraction = (speed - lower.first) / (upper.first - lower.first)
+    return rgbHex(IntArray(3) { channel ->
+        (lower.second[channel] + (upper.second[channel] - lower.second[channel]) * fraction).roundToInt()
+    })
+}
+
+private fun rgbHex(rgb: IntArray) = "#%02X%02X%02X".format(rgb[0], rgb[1], rgb[2])
+
+internal fun fastestSegmentIndexes(points: List<TrackPointEntity>): Set<Int> {
+    if (points.size < 2) return emptySet()
+    val speeds = points.drop(1).map { it.speedMps.takeIf(Double::isFinite)?.coerceAtLeast(0.0) }
+    val maximum = speeds.filterNotNull().maxOrNull() ?: return emptySet()
+    return speeds.mapIndexedNotNullTo(linkedSetOf()) { index, speed -> index.takeIf { speed == maximum } }
+}
+
+private fun speedRouteFeatures(points: List<TrackPointEntity>): List<Feature> {
+    val fastest = fastestSegmentIndexes(points)
+    return points.zipWithNext().mapIndexed { index, (start, end) ->
+        Feature.fromGeometry(LineString.fromLngLats(listOf(
+            Point.fromLngLat(start.longitude, start.latitude),
+            Point.fromLngLat(end.longitude, end.latitude),
+        ))).apply {
+            addStringProperty("color", speedColorHex(end.speedMps * 3.6))
+            addNumberProperty("width", if (index in fastest) 9f else 6f)
+        }
+    }
+}
+
+@Composable
+private fun SpeedGradientLegend(modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = .92f)) {
+        Row(
+            Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("5", style = MaterialTheme.typography.labelSmall)
+            Box(
+                Modifier.size(width = 150.dp, height = 8.dp).background(
+                    Brush.horizontalGradient(speedColorStops.map { ComposeColor(it.second[0], it.second[1], it.second[2]) }),
+                    RoundedCornerShape(4.dp),
+                ),
+            )
+            Text("70 km/h", style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -505,7 +582,7 @@ private fun rememberValidatedNetworkAvailable(): Boolean {
 private fun addRideLayers(style: Style, context: Context) {
     style.addSource(GeoJsonSource(ROUTE_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(LineLayer("flightlog-route-line", ROUTE_SOURCE).withProperties(
-        lineColor("#42D9E8"), lineWidth(5f),
+        lineColor(Expression.get("color")), lineWidth(Expression.get("width")),
     ))
     style.addSource(GeoJsonSource(HIGHLIGHTED_ROUTE_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(LineLayer("flightlog-highlighted-route-line", HIGHLIGHTED_ROUTE_SOURCE).withProperties(
@@ -595,17 +672,19 @@ private fun updateMap(
     boundaryStart: TrackPointEntity? = null,
     boundaryEnd: TrackPointEntity? = null,
     selectedJumpId: Long? = null,
+    showSpeedGradient: Boolean = false,
 ) {
     val readyMap = map ?: return
     readyMap.getStyle { style ->
-        val routeFeatures = if (points.size >= 2) {
-            arrayOf(Feature.fromGeometry(LineString.fromLngLats(points.map { Point.fromLngLat(it.longitude, it.latitude) })))
-        } else emptyArray()
+        val routeFeatures = when {
+            points.size < 2 -> emptyArray()
+            showSpeedGradient -> speedRouteFeatures(points).toTypedArray()
+            else -> arrayOf(Feature.fromGeometry(LineString.fromLngLats(points.map { Point.fromLngLat(it.longitude, it.latitude) })).apply {
+                addStringProperty("color", if (highlightedPoints.isEmpty()) "#42D9E8" else "#6F7B73")
+                addNumberProperty("width", if (highlightedPoints.isEmpty()) 5f else 4f)
+            })
+        }
         style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(routeFeatures))
-        style.getLayerAs<LineLayer>("flightlog-route-line")?.setProperties(
-            lineColor(if (highlightedPoints.isEmpty()) "#42D9E8" else "#6F7B73"),
-            lineWidth(if (highlightedPoints.isEmpty()) 5f else 4f),
-        )
         val highlightedFeatures = if (highlightedPoints.size >= 2) {
             arrayOf(Feature.fromGeometry(LineString.fromLngLats(highlightedPoints.map { Point.fromLngLat(it.longitude, it.latitude) })))
         } else emptyArray()

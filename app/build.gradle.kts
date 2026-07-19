@@ -28,8 +28,8 @@ android {
         applicationId = "com.example.flightlog"
         minSdk = 29
         targetSdk = 36
-        versionCode = 33
-        versionName = "1.1.25"
+        versionCode = 35
+        versionName = "1.1.27"
 
         buildConfigField("String", "THUNDERFOREST_API_KEY", "\"$thunderforestApiKey\"")
 

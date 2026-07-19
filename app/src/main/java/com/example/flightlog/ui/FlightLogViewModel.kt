@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -94,6 +95,15 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     }.flatMapLatest { jump ->
         if (jump == null) flowOf(MotionTelemetry.EMPTY) else repository.jumpMotion(jump)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MotionTelemetry.EMPTY)
+
+    val selectedRidePeakGForces = selectedRideJumps.flatMapLatest { rideJumps ->
+        if (rideJumps.isEmpty()) flowOf(emptyMap())
+        else combine(rideJumps.map { jump ->
+            repository.jumpMotion(jump).map { motion ->
+                jump.id to filteredPeakGForce(jump, motion.accelerationFrames())
+            }
+        }) { peaks -> peaks.filter { it.second != null }.associate { it.first to requireNotNull(it.second) } }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     val selectedRideStops = selectedRideId.flatMapLatest { id ->
         if (id == null) flowOf(emptyList()) else repository.stops(id)

@@ -64,6 +64,32 @@ internal fun accelerationTrace(jump: JumpEventEntity, samples: List<MotionSample
         AccelerationPoint(sample.timestampMillis - jump.takeoffAt, magnitude / STANDARD_GRAVITY)
     }
 
+internal fun filteredPeakGForce(
+    jump: JumpEventEntity,
+    samples: List<MotionSample>,
+    filterMillis: Long = PEAK_G_FILTER_MILLIS,
+): Double? {
+    val acceleration = accelerationTrace(jump, samples)
+        .filter { it.millisFromTakeoff in -250L..(jump.landingAt - jump.takeoffAt + 250L) }
+    if (acceleration.size < 3) return null
+
+    var start = 0
+    var sum = 0.0
+    var peak: Double? = null
+    acceleration.forEachIndexed { end, point ->
+        sum += point.magnitudeG
+        while (point.millisFromTakeoff - acceleration[start].millisFromTakeoff > filterMillis) {
+            sum -= acceleration[start++].magnitudeG
+        }
+        val span = point.millisFromTakeoff - acceleration[start].millisFromTakeoff
+        val count = end - start + 1
+        if (count >= 3 && span >= filterMillis) {
+            peak = maxOf(peak ?: 0.0, sum / count)
+        }
+    }
+    return peak
+}
+
 internal fun flightGpsSpeedSamples(jump: JumpEventEntity, points: List<TrackPointEntity>): List<GpsSpeedPoint> =
     points.asSequence()
         .filter { it.recordedAt in jump.takeoffAt..jump.landingAt }
@@ -88,3 +114,4 @@ internal fun pumpAccelerationPoint(acceleration: List<AccelerationPoint>): Accel
     acceleration.filter { it.millisFromTakeoff in -250L..0L }.maxByOrNull { it.magnitudeG }
 
 private const val STANDARD_GRAVITY = 9.80665
+internal const val PEAK_G_FILTER_MILLIS = 30L
