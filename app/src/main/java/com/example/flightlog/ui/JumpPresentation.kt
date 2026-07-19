@@ -78,7 +78,10 @@ internal fun filteredPeakGForce(
     var peak: Double? = null
     acceleration.forEachIndexed { end, point ->
         sum += point.magnitudeG
-        while (point.millisFromTakeoff - acceleration[start].millisFromTakeoff > filterMillis) {
+        while (
+            start < end &&
+            point.millisFromTakeoff - acceleration[start + 1].millisFromTakeoff >= filterMillis
+        ) {
             sum -= acceleration[start++].magnitudeG
         }
         val span = point.millisFromTakeoff - acceleration[start].millisFromTakeoff
@@ -114,4 +117,4 @@ internal fun pumpAccelerationPoint(acceleration: List<AccelerationPoint>): Accel
     acceleration.filter { it.millisFromTakeoff in -250L..0L }.maxByOrNull { it.magnitudeG }
 
 private const val STANDARD_GRAVITY = 9.80665
-internal const val PEAK_G_FILTER_MILLIS = 75L
+internal const val PEAK_G_FILTER_MILLIS = 50L

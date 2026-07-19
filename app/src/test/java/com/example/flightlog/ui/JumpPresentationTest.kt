@@ -63,19 +63,17 @@ class JumpPresentationTest {
         assertEquals(1.0, acceleration.single().magnitudeG, .001)
     }
 
-    @Test fun peakGForceUsesSeventyFiveMillisecondMeanInsteadOfSingleSampleSpike() {
+    @Test fun peakGForceUsesFiftyMillisecondWindowWithTwentyMillisecondSamples() {
         val jump = jump(id = 1, takeoffAt = 1_000)
         val oneG = 9.80665f
         val samples = listOf(
             MotionSample(990, 0f, 0f, oneG, 0f, 0f, 0f),
-            MotionSample(1_005, 0f, 0f, oneG, 0f, 0f, 0f),
-            MotionSample(1_020, 0f, 0f, oneG * 10, 0f, 0f, 0f),
-            MotionSample(1_035, 0f, 0f, oneG, 0f, 0f, 0f),
+            MotionSample(1_010, 0f, 0f, oneG, 0f, 0f, 0f),
+            MotionSample(1_030, 0f, 0f, oneG * 10, 0f, 0f, 0f),
             MotionSample(1_050, 0f, 0f, oneG, 0f, 0f, 0f),
-            MotionSample(1_065, 0f, 0f, oneG, 0f, 0f, 0f),
         )
 
-        assertEquals(2.5, filteredPeakGForce(jump, samples) ?: 0.0, .001)
+        assertEquals(3.25, filteredPeakGForce(jump, samples) ?: 0.0, .001)
     }
 
     @Test fun takeoffSpeedUsesLatestGpsPointStrictlyBeforePump() {
