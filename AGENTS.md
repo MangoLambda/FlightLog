@@ -10,7 +10,6 @@
 - The final APKs are written to `app/build/outputs/apk/release/`:
   - `app-arm64-v8a-release.apk` for most current Android phones.
   - `app-armeabi-v7a-release.apk` for older 32-bit ARM devices.
-  - `app-x86-release.apk` and `app-x86_64-release.apk` for compatible emulators/devices.
   - `app-universal-release.apk` as the larger fallback when the device ABI is unknown.
 - Before publishing, confirm `output-metadata.json` contains the intended `versionName` and `versionCode`, run the unit tests, and verify every APK signature with Android SDK `apksigner`.
 - Name GitHub assets `FlightLog-v<version>-<abi>.apk`, including `FlightLog-v<version>-universal.apk`, and publish them together in a `v<version>` GitHub Release tagged at the pushed version commit.
