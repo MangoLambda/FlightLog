@@ -38,6 +38,12 @@ class RideSpeedPresentationTest {
         assertEquals(emptySet<Int>(), fastestSegmentIndexes(points.take(1)))
     }
 
+    @Test fun `fastest point is the fix at the end of the fastest segment`() {
+        val points = listOf(2.0, 5.0, 3.0).mapIndexed { index, speed -> point(index, speed) }
+        assertEquals(points[1], fastestPoint(points))
+        assertNull(fastestPoint(points.take(1)))
+    }
+
     @Test fun `average speed uses distance and moving time`() {
         assertEquals(5.0, averageMovingSpeedMps(1_500.0, 300_000L)!!, 0.0)
         assertNull(averageMovingSpeedMps(1_500.0, 0L))

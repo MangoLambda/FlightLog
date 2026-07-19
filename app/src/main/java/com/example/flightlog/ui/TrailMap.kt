@@ -111,6 +111,9 @@ private const val JUMP_TAKEOFF_IMAGE = "flightlog-jump-takeoff-image"
 private const val JUMP_LANDING_IMAGE = "flightlog-jump-landing-image"
 private const val JUMP_TAKEOFF_LAYER = "flightlog-jump-takeoff-points"
 private const val JUMP_LANDING_LAYER = "flightlog-jump-landing-points"
+private const val TOP_SPEED_SOURCE = "flightlog-top-speed"
+private const val TOP_SPEED_IMAGE = "flightlog-top-speed-image"
+private const val TOP_SPEED_LAYER = "flightlog-top-speed-point"
 private const val STOP_SOURCE = "flightlog-stops"
 private const val STOP_IMAGE = "flightlog-stop-image"
 private const val SPLIT_ROUTE_SOURCE = "flightlog-split-routes"
@@ -443,6 +446,9 @@ internal fun fastestSegmentIndexes(points: List<TrackPointEntity>): Set<Int> {
     return speeds.mapIndexedNotNullTo(linkedSetOf()) { index, speed -> index.takeIf { speed == maximum } }
 }
 
+internal fun fastestPoint(points: List<TrackPointEntity>): TrackPointEntity? =
+    fastestSegmentIndexes(points).firstOrNull()?.let { points.getOrNull(it + 1) }
+
 private fun speedRouteFeatures(points: List<TrackPointEntity>): List<Feature> {
     val fastest = fastestSegmentIndexes(points)
     return points.zipWithNext().mapIndexed { index, (start, end) ->
@@ -450,8 +456,8 @@ private fun speedRouteFeatures(points: List<TrackPointEntity>): List<Feature> {
             Point.fromLngLat(start.longitude, start.latitude),
             Point.fromLngLat(end.longitude, end.latitude),
         ))).apply {
-            addStringProperty("color", if (index in fastest) "#FFFF00" else speedColorHex(end.speedMps * 3.6))
-            addNumberProperty("width", if (index in fastest) 11f else 6f)
+            addStringProperty("color", speedColorHex(end.speedMps * 3.6))
+            addNumberProperty("width", if (index in fastest) 14f else 6f)
         }
     }
 }
@@ -630,6 +636,11 @@ private fun addRideLayers(style: Style, context: Context) {
     style.addLayer(SymbolLayer(JUMP_LANDING_LAYER, JUMP_LANDING_SOURCE).withProperties(
         iconImage(JUMP_LANDING_IMAGE), iconAllowOverlap(true),
     ))
+    style.addImage(TOP_SPEED_IMAGE, jumpEndpointBitmap(context, Color.YELLOW))
+    style.addSource(GeoJsonSource(TOP_SPEED_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
+    style.addLayer(SymbolLayer(TOP_SPEED_LAYER, TOP_SPEED_SOURCE).withProperties(
+        iconImage(TOP_SPEED_IMAGE), iconAllowOverlap(true),
+    ))
     style.addSource(GeoJsonSource(JUMP_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
     style.addLayer(CircleLayer(JUMP_SELECTED_LAYER, JUMP_SOURCE).withProperties(
         circleColor("#42D9E8"), circleRadius(14f),
@@ -748,6 +759,12 @@ private fun updateMap(
             }
         }
         style.getSourceAs<GeoJsonSource>(JUMP_LANDING_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(landingFeatures))
+        val topSpeedFeatures = if (showSpeedGradient) {
+            fastestPoint(points)?.let { point ->
+                arrayOf(Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude)))
+            } ?: emptyArray()
+        } else emptyArray()
+        style.getSourceAs<GeoJsonSource>(TOP_SPEED_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(topSpeedFeatures))
         val stopFeatures = stopPoints.map {
             Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude))
         }
