@@ -16,6 +16,10 @@ val thunderforestApiKey = (
         ?: ""
     ).replace("\\", "\\\\").replace("\"", "\\\"")
 
+composeCompiler {
+    includeComposeMappingFile.set(false)
+}
+
 android {
     namespace = "com.example.flightlog"
     compileSdk {
@@ -28,8 +32,8 @@ android {
         applicationId = "com.example.flightlog"
         minSdk = 29
         targetSdk = 36
-        versionCode = 36
-        versionName = "1.1.28"
+        versionCode = 37
+        versionName = "1.1.29"
 
         buildConfigField("String", "THUNDERFOREST_API_KEY", "\"$thunderforestApiKey\"")
 
@@ -43,9 +47,24 @@ android {
 
     buildTypes {
         release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             optimization {
                 enable = false
             }
+        }
+    }
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            isUniversalApk = true
         }
     }
     compileOptions {
