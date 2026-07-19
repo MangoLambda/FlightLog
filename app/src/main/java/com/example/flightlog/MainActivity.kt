@@ -3,6 +3,7 @@
 package com.example.flightlog
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -56,6 +57,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.data.RideEntity
@@ -116,6 +120,7 @@ import com.example.flightlog.ui.pumpAccelerationPoint
 import com.example.flightlog.ui.flightGpsSpeedSamples
 import com.example.flightlog.ui.GpsSpeedPoint
 import com.example.flightlog.maps.MapStyle
+import com.example.flightlog.update.UpdateUiState
 import com.example.flightlog.ui.theme.Amber
 import com.example.flightlog.ui.theme.FlightLogTheme
 import com.example.flightlog.ui.theme.Lime
@@ -173,6 +178,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val effectiveMapApiKey by vm.effectiveMapApiKey.collectAsStateWithLifecycle()
     val mapStyle by vm.mapStyle.collectAsStateWithLifecycle()
     val tileCacheState by vm.tileCacheState.collectAsStateWithLifecycle()
+    val updateState by vm.updateState.collectAsStateWithLifecycle()
     var pendingRideStart by remember { mutableStateOf(false) }
     var focusMapProvider by remember { mutableStateOf(false) }
     var showActiveMapSettings by remember { mutableStateOf(false) }
@@ -185,6 +191,17 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     }
     val preferences = remember { context.getSharedPreferences("settings", 0) }
     var showWelcome by remember { mutableStateOf(!preferences.getBoolean("welcomed", false)) }
+    val activity = context as Activity
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(Unit) { vm.checkForUpdate() }
+    DisposableEffect(lifecycleOwner, activity) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) vm.resumeUpdateInstall(activity)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val permissions = remember {
         buildList {
@@ -227,6 +244,15 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                 preferences.edit().putBoolean("welcomed", true).apply()
                 showWelcome = false
             },
+        )
+    } else {
+        UpdateDialog(
+            state = updateState,
+            onUpdate = vm::downloadUpdate,
+            onSkip = vm::skipUpdate,
+            onCancelDownload = vm::cancelUpdateDownload,
+            onInstall = { vm.installUpdate(activity) },
+            onDismissError = vm::dismissUpdateError,
         )
     }
 
@@ -452,6 +478,72 @@ private fun WelcomeDialog(onDismiss: () -> Unit) {
         },
         confirmButton = { Button(onClick = onDismiss) { Text("I understand") } },
     )
+}
+
+@Composable
+private fun UpdateDialog(
+    state: UpdateUiState,
+    onUpdate: (com.example.flightlog.update.UpdateRelease) -> Unit,
+    onSkip: (com.example.flightlog.update.UpdateRelease) -> Unit,
+    onCancelDownload: () -> Unit,
+    onInstall: () -> Unit,
+    onDismissError: () -> Unit,
+) {
+    when (state) {
+        is UpdateUiState.Available -> AlertDialog(
+            onDismissRequest = { onSkip(state.release) },
+            icon = { Icon(Icons.Default.SystemUpdate, null) },
+            title = { Text("${state.release.title} is available") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Installed: ${com.example.flightlog.BuildConfig.VERSION_NAME}  •  New: ${state.release.version}")
+                    if (state.release.notes.isNotBlank()) {
+                        Text(state.release.notes.take(1_500), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Text("Android will ask you to approve the installation.")
+                }
+            },
+            confirmButton = { Button(onClick = { onUpdate(state.release) }) { Text("Update") } },
+            dismissButton = { TextButton(onClick = { onSkip(state.release) }) { Text("Skip this version") } },
+        )
+        is UpdateUiState.Downloading -> AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Downloading ${state.release.version}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val progress = if (state.totalBytes > 0) state.bytesRead.toFloat() / state.totalBytes else 0f
+                    LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                    Text("${formatDataSize(state.bytesRead)} of ${formatDataSize(state.totalBytes)}")
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = onCancelDownload) { Text("Cancel") } },
+        )
+        is UpdateUiState.AwaitingInstallPermission -> AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Allow app updates") },
+            text = { Text("Allow FlightLog to install unknown apps, then return here to continue with ${state.release.version}.") },
+            confirmButton = { Button(onClick = onInstall) { Text("Open settings") } },
+            dismissButton = { TextButton(onClick = onDismissError) { Text("Cancel") } },
+        )
+        is UpdateUiState.ReadyToInstall -> {
+            LaunchedEffect(state.release.tag) { onInstall() }
+            AlertDialog(
+                onDismissRequest = {},
+                title = { Text("Update ready") },
+                text = { Text("Opening Android's installer for ${state.release.version}…") },
+                confirmButton = { Button(onClick = onInstall) { Text("Install") } },
+                dismissButton = { TextButton(onClick = onDismissError) { Text("Cancel") } },
+            )
+        }
+        is UpdateUiState.Error -> AlertDialog(
+            onDismissRequest = onDismissError,
+            title = { Text("Update failed") },
+            text = { Text(state.message) },
+            confirmButton = { Button(onClick = onDismissError) { Text("OK") } },
+        )
+        UpdateUiState.Idle, UpdateUiState.Checking -> Unit
+    }
 }
 
 @Composable

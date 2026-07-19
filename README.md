@@ -7,7 +7,8 @@ FlightLog is an offline-first Android mountain-bike ride recorder. It stores GPS
 1. Open the project in the current stable Android Studio.
 2. Select a physical device or API 29+ emulator.
 3. Optionally provide an app-wide Thunderforest key by adding `THUNDERFOREST_API_KEY=your_key` to the untracked `local.properties` file. Riders can also bring their own key from Settings. Without either key, FlightLog shows the offline route canvas and an actionable map warning.
-4. Run the `app` configuration and grant precise location and notification access.
+4. To enable GitHub release updates, add `FLIGHTLOG_UPDATE_BASE_URL=https://github.com/MangoLambda/FlightLog` to `local.properties`. The same-named environment variable can be used by automated builds.
+5. Run the `app` configuration and grant precise location and notification access.
 
 The debug APK is also generated at `app/build/outputs/apk/debug/app-debug.apk` by:
 
@@ -25,6 +26,9 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradle
 - Spatial trail matching with suggested/confirmed trails and editable turn, rough-area, and manual sections
 - Trend, two-run A/B, and theoretical virtual-best comparisons based on materialized 5 m profiles
 - Versioned full-history `.flightlog.zip` backup/import with stable IDs and validated telemetry checksums
+- Startup checks for signed GitHub release updates with ABI-specific APK selection
+
+FlightLog only offers stable releases newer than the installed version. Choosing Update downloads the matching device ABI (or the universal fallback), verifies GitHub's SHA-256 digest, package identity, version, and signing certificate, and then opens Android's package installer. Android requires the rider to approve FlightLog as an install source and confirm each installation; silent self-installation is not available to ordinary apps. Skipping a release suppresses only that version.
 
 ## Ride history and telemetry
 

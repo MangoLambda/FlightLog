@@ -15,6 +15,11 @@ val thunderforestApiKey = (
         ?: System.getenv("THUNDERFOREST_API_KEY")
         ?: ""
     ).replace("\\", "\\\\").replace("\"", "\\\"")
+val flightLogUpdateBaseUrl = (
+    localProperties.getProperty("FLIGHTLOG_UPDATE_BASE_URL")
+        ?: System.getenv("FLIGHTLOG_UPDATE_BASE_URL")
+        ?: ""
+    ).replace("\\", "\\\\").replace("\"", "\\\"")
 
 composeCompiler {
     includeComposeMappingFile.set(false)
@@ -32,10 +37,11 @@ android {
         applicationId = "com.example.flightlog"
         minSdk = 29
         targetSdk = 36
-        versionCode = 38
-        versionName = "1.1.30"
+        versionCode = 39
+        versionName = "1.1.31"
 
         buildConfigField("String", "THUNDERFOREST_API_KEY", "\"$thunderforestApiKey\"")
+        buildConfigField("String", "FLIGHTLOG_UPDATE_BASE_URL", "\"$flightLogUpdateBaseUrl\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         javaCompileOptions {
@@ -101,6 +107,7 @@ dependencies {
     implementation(libs.androidx.work.runtime)
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:${libs.versions.coroutines.get()}")
+    testImplementation("org.json:json:20250517")
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.work.testing)

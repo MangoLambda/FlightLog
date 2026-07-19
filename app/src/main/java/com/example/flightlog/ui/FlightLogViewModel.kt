@@ -28,6 +28,8 @@ import com.example.flightlog.tracking.RecordingSettingsStore
 import com.example.flightlog.tracking.TrackingState
 import com.example.flightlog.tracking.TrailAnalysis
 import com.example.flightlog.tracking.MotionTelemetry
+import com.example.flightlog.update.AppUpdateManager
+import com.example.flightlog.update.UpdateRelease
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -81,6 +83,21 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     val mapStyle = MutableStateFlow(MapStyleStore.read(application))
     val hasBundledMapApiKey = MapApiKeyStore.hasBundledKey()
     val tileCacheState = MapTileCache.state
+    private val updateManager = AppUpdateManager(application)
+    val updateState = updateManager.state
+
+    fun checkForUpdate() = viewModelScope.launch { updateManager.check() }
+
+    fun downloadUpdate(release: UpdateRelease) {
+        val job = viewModelScope.launch { updateManager.download(release) }
+        updateManager.attachDownloadJob(job)
+    }
+
+    fun cancelUpdateDownload() = updateManager.cancelDownload()
+    fun skipUpdate(release: UpdateRelease) = updateManager.skip(release)
+    fun dismissUpdateError() = updateManager.dismissError()
+    fun installUpdate(activity: android.app.Activity) = updateManager.install(activity)
+    fun resumeUpdateInstall(activity: android.app.Activity) = updateManager.resumeInstall(activity)
 
     val selectedPoints = selectedRideId.flatMapLatest { id ->
         if (id == null) flowOf(emptyList()) else repository.trackPoints(id)
