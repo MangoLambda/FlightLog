@@ -1279,7 +1279,12 @@ private fun JumpDetailScreen(
                                 JumpDetailMetric("HEIGHT", formatHeight(jump.displayHeightMeters, imperial), Modifier.weight(1f))
                             }
                             Row(Modifier.fillMaxWidth()) {
-                                JumpDetailMetric("DISTANCE", formatDistance(jump.displayDistanceMeters, imperial), Modifier.weight(1f))
+                                JumpDetailMetric(
+                                    label = "DISTANCE",
+                                    value = formatDistance(jump.displayDistanceMeters, imperial),
+                                    modifier = Modifier.weight(1f),
+                                    gpsConfirmed = flightSpeeds.isNotEmpty(),
+                                )
                                 JumpDetailMetric("TAKEOFF SPEED", prePumpSpeed?.let { formatSpeed(it, imperial) } ?: "—", Modifier.weight(1f))
                             }
                         }
@@ -1331,10 +1336,25 @@ private fun FlightGpsSpeedCard(samples: List<GpsSpeedPoint>, imperial: Boolean) 
 }
 
 @Composable
-private fun JumpDetailMetric(label: String, value: String, modifier: Modifier = Modifier) {
+private fun JumpDetailMetric(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    gpsConfirmed: Boolean = false,
+) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontSize = 22.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(value, fontSize = 22.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
+            if (gpsConfirmed) {
+                Icon(
+                    imageVector = Icons.Filled.Star,
+                    contentDescription = "GPS flight speed confirmed",
+                    tint = Color(0xFF2EAF5D),
+                    modifier = Modifier.size(18.dp).padding(start = 2.dp),
+                )
+            }
+        }
     }
 }
 
