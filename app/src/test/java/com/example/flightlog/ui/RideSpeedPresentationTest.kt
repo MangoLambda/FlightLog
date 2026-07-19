@@ -2,11 +2,25 @@ package com.example.flightlog.ui
 
 import com.example.flightlog.averageMovingSpeedMps
 import com.example.flightlog.data.TrackPointEntity
+import com.example.flightlog.data.JumpEventEntity
+import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.SensorQuality
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class RideSpeedPresentationTest {
+    @Test fun `new jumps are confirmed by default`() {
+        val jump = JumpEventEntity(
+            rideId = 1, takeoffAt = 1_000, landingAt = 1_500,
+            estimatedFlightSeconds = .5, estimatedHeightMeters = .3,
+            estimatedDistanceMeters = 4.0, confidence = 80,
+            sensorQuality = SensorQuality.FULL,
+        )
+
+        assertEquals(JumpStatus.CONFIRMED, jump.status)
+    }
+
     @Test fun `speed colors clamp to fixed endpoints`() {
         assertEquals("#D9F7FF", speedColorHex(0.0))
         assertEquals("#D9F7FF", speedColorHex(5.0))

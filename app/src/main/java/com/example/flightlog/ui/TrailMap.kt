@@ -120,6 +120,7 @@ private const val RIDER_SOURCE = "flightlog-rider"
 private const val RIDER_IMAGE = "flightlog-rider-arrow"
 private const val RIDER_ZOOM = 14.5
 private const val JUMP_ZOOM = 17.0
+private const val FASTEST_SEGMENT_ZOOM = 17.0
 
 private enum class BoundaryDragTarget { START, END }
 
@@ -151,6 +152,7 @@ fun TrailMap(
     selectedJumpId: Long? = null,
     onJumpClick: ((Long) -> Unit)? = null,
     showSpeedGradient: Boolean = false,
+    focusFastestSegmentKey: Int = 0,
 ) {
     val context = LocalContext.current
     val routePaddingPixels = with(LocalDensity.current) { 96.dp.roundToPx() }
@@ -232,6 +234,22 @@ fun TrailMap(
         val camera = CameraPosition.Builder()
             .target(LatLng(coordinate.latitude, coordinate.longitude))
             .zoom(maxOf(readyMap.cameraPosition.zoom, JUMP_ZOOM))
+            .build()
+        readyMap.animateCamera(CameraUpdateFactory.newCameraPosition(camera), 350)
+    }
+
+    LaunchedEffect(map, focusFastestSegmentKey) {
+        if (focusFastestSegmentKey == 0) return@LaunchedEffect
+        val fastestIndex = fastestSegmentIndexes(points).firstOrNull() ?: return@LaunchedEffect
+        val start = points[fastestIndex]
+        val end = points[fastestIndex + 1]
+        val readyMap = map ?: return@LaunchedEffect
+        val camera = CameraPosition.Builder()
+            .target(LatLng(
+                (start.latitude + end.latitude) / 2.0,
+                (start.longitude + end.longitude) / 2.0,
+            ))
+            .zoom(maxOf(readyMap.cameraPosition.zoom, FASTEST_SEGMENT_ZOOM))
             .build()
         readyMap.animateCamera(CameraUpdateFactory.newCameraPosition(camera), 350)
     }
@@ -432,8 +450,8 @@ private fun speedRouteFeatures(points: List<TrackPointEntity>): List<Feature> {
             Point.fromLngLat(start.longitude, start.latitude),
             Point.fromLngLat(end.longitude, end.latitude),
         ))).apply {
-            addStringProperty("color", speedColorHex(end.speedMps * 3.6))
-            addNumberProperty("width", if (index in fastest) 9f else 6f)
+            addStringProperty("color", if (index in fastest) "#FFFF00" else speedColorHex(end.speedMps * 3.6))
+            addNumberProperty("width", if (index in fastest) 11f else 6f)
         }
     }
 }

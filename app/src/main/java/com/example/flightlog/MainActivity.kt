@@ -17,6 +17,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.horizontalScroll
@@ -905,6 +906,7 @@ private fun ReviewScreen(
     val numbers = remember(jumps) { jumpNumbers(jumps) }
     val jumpListState = rememberLazyListState()
     val pendingCount = jumps.count { it.status == JumpStatus.PENDING }
+    var focusFastestSegmentKey by rememberSaveable(ride.id) { mutableIntStateOf(0) }
     LaunchedEffect(selectedJumpId, jumps) {
         val index = jumps.indexOfFirst { it.id == selectedJumpId }
         if (index >= 0) jumpListState.animateScrollToItem(1 + (if (pendingCount > 0) 1 else 0) + index)
@@ -988,6 +990,7 @@ private fun ReviewScreen(
                 selectedJumpId = selectedJumpId,
                 onJumpClick = onSelectJump,
                 showSpeedGradient = true,
+                focusFastestSegmentKey = focusFastestSegmentKey,
             )
             if (points.isEmpty()) {
                 Box(
@@ -1028,7 +1031,12 @@ private fun ReviewScreen(
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         Metric("DISTANCE", formatDistance(ride.distanceMeters, imperial))
-                        Metric("TOP SPEED", formatSpeed(ride.maxSpeedMps, imperial))
+                        Metric(
+                            "TOP SPEED",
+                            formatSpeed(ride.maxSpeedMps, imperial),
+                            prominent = true,
+                            onClick = { focusFastestSegmentKey += 1 },
+                        )
                         Metric(
                             "AVG SPEED",
                             averageMovingSpeedMps(ride.distanceMeters, ride.movingTimeMillis)
@@ -1102,7 +1110,10 @@ private fun JumpCard(
                     }
                     TextButton(onClick = { onStatus(JumpStatus.REJECTED) }) { Text("Discard") }
                 }
-                JumpStatus.CONFIRMED -> TextButton(onClick = onOpen) { Text("View flight") }
+                JumpStatus.CONFIRMED -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onOpen) { Text("View flight") }
+                    TextButton(onClick = { onStatus(JumpStatus.REJECTED) }) { Text("Discard") }
+                }
                 JumpStatus.REJECTED -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onOpen) { Text("View flight") }
                     TextButton(onClick = { onStatus(JumpStatus.PENDING) }) { Text("Restore") }
@@ -2166,10 +2177,28 @@ private fun StatusChip(text: String, ready: Boolean) {
 }
 
 @Composable
-private fun Metric(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+private fun Metric(
+    label: String,
+    value: String,
+    prominent: Boolean = false,
+    onClick: (() -> Unit)? = null,
+) {
+    Column(
+        modifier = if (onClick == null) Modifier else Modifier.clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (prominent) FontWeight.Black else FontWeight.Normal,
+        )
+        Text(
+            value,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = if (prominent) FontWeight.Black else FontWeight.Bold,
+            fontSize = if (prominent) 19.sp else 17.sp,
+        )
     }
 }
 

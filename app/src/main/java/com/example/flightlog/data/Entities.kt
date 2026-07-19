@@ -77,7 +77,7 @@ data class JumpEventEntity(
     val correctedHeightMeters: Double? = null,
     val correctedDistanceMeters: Double? = null,
     val confidence: Int,
-    val status: JumpStatus = JumpStatus.PENDING,
+    val status: JumpStatus = JumpStatus.CONFIRMED,
     val sensorQuality: SensorQuality,
     val latitude: Double? = null,
     val longitude: Double? = null,

@@ -114,4 +114,4 @@ internal fun pumpAccelerationPoint(acceleration: List<AccelerationPoint>): Accel
     acceleration.filter { it.millisFromTakeoff in -250L..0L }.maxByOrNull { it.magnitudeG }
 
 private const val STANDARD_GRAVITY = 9.80665
-internal const val PEAK_G_FILTER_MILLIS = 30L
+internal const val PEAK_G_FILTER_MILLIS = 75L
