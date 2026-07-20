@@ -1,6 +1,7 @@
 package com.example.flightlog.data
 
 import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.FlightKind
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -45,6 +46,7 @@ class RideRepository(private val database: FlightLogDatabase) {
         .catch { emit(MotionTelemetry.EMPTY) }
     fun stops(rideId: Long) = dao.observeStopEventsForRide(rideId)
     suspend fun setJumpStatus(id: Long, status: JumpStatus) = dao.setJumpStatus(id, status)
+    suspend fun setCorrectedFlightKind(id: Long, kind: FlightKind?) = dao.setCorrectedFlightKind(id, kind)
     suspend fun updateJump(jump: JumpEventEntity) = dao.updateJump(jump)
     suspend fun ride(id: Long) = dao.ride(id)
     suspend fun pointSnapshot(id: Long) = compactedPoints(id)

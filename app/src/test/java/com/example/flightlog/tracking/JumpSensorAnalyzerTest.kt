@@ -2,6 +2,7 @@ package com.example.flightlog.tracking
 
 import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.domain.MountingMode
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.SensorQuality
 import kotlin.math.pow
 import kotlin.math.sin
@@ -31,6 +32,43 @@ class JumpSensorAnalyzerTest {
         assertEquals(100.0, rate.deliveredHz!!, .001)
         assertEquals(50L, rate.maximumGapMillis)
         assertEquals(5, rate.sampleCount)
+    }
+
+    @Test fun classifiesClearMountedLaunchAsJump() {
+        val analysis = JumpSensorAnalyzer.analyze(jump(), telemetry { timestamp ->
+            if (timestamp in 650..1_000) 5.0 else 0.0
+        }, MountingMode.BIKE_MOUNTED)
+
+        assertEquals(FlightKind.JUMP, analysis.estimatedFlightKind)
+        assertTrue(analysis.flightKindConfidence >= 60)
+        assertTrue((analysis.upwardLaunchImpulseMps ?: 0.0) >= 0.65)
+    }
+
+    @Test fun classifiesRollOffWithoutLaunchImpulseAsDrop() {
+        val analysis = JumpSensorAnalyzer.analyze(jump(), telemetry { 0.0 }, MountingMode.BIKE_MOUNTED)
+
+        assertEquals(FlightKind.DROP, analysis.estimatedFlightKind)
+        assertTrue(analysis.flightKindConfidence >= 60)
+    }
+
+    @Test fun missingOrientationIsUncertain() {
+        val telemetry = telemetry { 0.0 }.copy(orientation = emptyList(), orientationSource = OrientationSource.NONE)
+        val analysis = JumpSensorAnalyzer.analyze(jump(), telemetry, MountingMode.BIKE_MOUNTED)
+
+        assertEquals(FlightKind.UNCERTAIN, analysis.estimatedFlightKind)
+        assertEquals(0, analysis.flightKindConfidence)
+    }
+
+    private fun telemetry(verticalAcceleration: (Long) -> Double): MotionTelemetry {
+        val timestamps = (0L..1_800L step 10L)
+        return MotionTelemetry(
+            orientationSource = OrientationSource.GAME_ROTATION_VECTOR,
+            accelerometer = timestamps.map { timestamp ->
+                Vector3Sample(timestamp, 0f, 0f, (9.80665 + verticalAcceleration(timestamp)).toFloat())
+            },
+            gyroscope = timestamps.map { Vector3Sample(it, 0f, 0f, 0f) },
+            orientation = timestamps.map { RotationSample(it, 0f, 0f, 0f, 1f) },
+        )
     }
 
     private fun jump(): JumpEventEntity {

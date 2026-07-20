@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import com.example.flightlog.FlightLogApplication
 import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.export.RideExporter
 import com.example.flightlog.export.FlightLogBackup
@@ -268,6 +269,10 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setJumpStatus(jumpId: Long, status: JumpStatus) = viewModelScope.launch {
         repository.setJumpStatus(jumpId, status)
+    }
+
+    fun setFlightKind(jumpId: Long, kind: FlightKind?) = viewModelScope.launch {
+        repository.setCorrectedFlightKind(jumpId, kind)
     }
 
     fun setImperial(enabled: Boolean) {

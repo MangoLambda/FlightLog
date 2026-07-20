@@ -155,6 +155,10 @@ class FlightLogBackup(
                 correctedDistanceMeters = json.nullableDouble("correctedDistanceMeters"),
                 confidence = json.getInt("confidence").also { require(it in 0..100) },
                 status = JumpStatus.valueOf(json.getString("status")), sensorQuality = SensorQuality.valueOf(json.getString("sensorQuality")),
+                estimatedFlightKind = json.optString("estimatedFlightKind", FlightKind.UNCERTAIN.name).let(FlightKind::valueOf),
+                correctedFlightKind = if (!json.has("correctedFlightKind") || json.isNull("correctedFlightKind")) null
+                    else FlightKind.valueOf(json.getString("correctedFlightKind")),
+                flightKindConfidence = json.optInt("flightKindConfidence", 0).also { require(it in 0..100) },
                 latitude = json.nullableDouble("latitude"), longitude = json.nullableDouble("longitude"),
             ))
         }
@@ -402,7 +406,7 @@ class FlightLogBackup(
 
     companion object {
         const val MIME_TYPE = "application/zip"
-        private const val FORMAT_VERSION = 4
+        private const val FORMAT_VERSION = 5
         private const val MAX_JUMP_TRACE_SAMPLES = 10_000
         private const val MAX_ENTRY_BYTES = 512L * 1024 * 1024
         private const val MAX_TOTAL_BYTES = 2L * 1024 * 1024 * 1024
@@ -455,7 +459,9 @@ private fun StopEventEntity.json(rideUuid: String) = JSONObject().put("uuid", uu
 private fun JumpEventEntity.json(rideUuid: String) = JSONObject().put("rideUuid", rideUuid).put("takeoffAt", takeoffAt).put("landingAt", landingAt)
     .put("estimatedFlightSeconds", estimatedFlightSeconds).put("estimatedHeightMeters", estimatedHeightMeters).put("estimatedDistanceMeters", estimatedDistanceMeters)
     .putNullable("correctedFlightSeconds", correctedFlightSeconds).putNullable("correctedHeightMeters", correctedHeightMeters).putNullable("correctedDistanceMeters", correctedDistanceMeters)
-    .put("confidence", confidence).put("status", status.name).put("sensorQuality", sensorQuality.name).putNullable("latitude", latitude).putNullable("longitude", longitude)
+    .put("confidence", confidence).put("status", status.name).put("sensorQuality", sensorQuality.name)
+    .put("estimatedFlightKind", estimatedFlightKind.name).putNullable("correctedFlightKind", correctedFlightKind?.name)
+    .put("flightKindConfidence", flightKindConfidence).putNullable("latitude", latitude).putNullable("longitude", longitude)
 private fun JumpMotionTraceEntity.json(rideUuid: String, takeoffAt: Long) = JSONObject()
     .put("rideUuid", rideUuid).put("takeoffAt", takeoffAt)
     .put("startedAt", startedAt).put("endedAt", endedAt).put("encodingVersion", encodingVersion)

@@ -2,6 +2,7 @@ package com.example.flightlog.domain
 
 enum class RideState { RECORDING, PAUSED, COMPLETED, INTERRUPTED }
 enum class JumpStatus { PENDING, CONFIRMED, REJECTED }
+enum class FlightKind { JUMP, DROP, UNCERTAIN }
 enum class SensorQuality { FULL, ACCELEROMETER_ONLY, DEGRADED }
 enum class AggregatePeriod { DAY, SEASON, LIFETIME }
 enum class MountingMode { POCKET, BIKE_MOUNTED }
@@ -24,6 +25,8 @@ data class RideTotals(
     val distanceMeters: Double = 0.0,
     val movingTimeMillis: Long = 0,
     val confirmedJumps: Int = 0,
+    val confirmedDrops: Int = 0,
+    val confirmedUncertainFlights: Int = 0,
     val pendingJumps: Int = 0,
     val rejectedJumps: Int = 0,
     val flightTimeSeconds: Double = 0.0,

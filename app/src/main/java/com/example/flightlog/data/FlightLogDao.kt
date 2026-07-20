@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.RideState
 import kotlinx.coroutines.flow.Flow
 
@@ -295,6 +296,9 @@ interface FlightLogDao {
 
     @Query("UPDATE jump_events SET status = :status WHERE id = :jumpId")
     suspend fun setJumpStatus(jumpId: Long, status: JumpStatus)
+
+    @Query("UPDATE jump_events SET correctedFlightKind = :kind WHERE id = :jumpId")
+    suspend fun setCorrectedFlightKind(jumpId: Long, kind: FlightKind?)
 
     @Query("UPDATE rides SET state = :interrupted, endedAt = COALESCE(endedAt, :now) WHERE state IN (:recording, :paused)")
     suspend fun interruptStaleRides(

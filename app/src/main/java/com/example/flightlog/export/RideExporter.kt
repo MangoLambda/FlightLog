@@ -20,7 +20,7 @@ object RideExporter {
     }
 
     fun jumpCsv(jumps: List<JumpEventEntity>): String = buildString {
-        append("jump_id,takeoff_utc,status,confidence,flight_seconds,height_meters,distance_meters,sensor_quality\n")
+        append("jump_id,takeoff_utc,status,confidence,flight_seconds,height_meters,distance_meters,sensor_quality,flight_kind,estimated_flight_kind,flight_kind_confidence\n")
         jumps.forEach { jump ->
             append(listOf(
                 jump.id,
@@ -31,6 +31,9 @@ object RideExporter {
                 String.format(Locale.US, "%.3f", jump.displayHeightMeters),
                 String.format(Locale.US, "%.3f", jump.displayDistanceMeters),
                 jump.sensorQuality,
+                jump.displayFlightKind,
+                jump.estimatedFlightKind,
+                jump.flightKindConfidence,
             ).joinToString(","))
             append('\n')
         }

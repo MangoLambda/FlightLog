@@ -4,6 +4,7 @@ import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.data.RideEntity
 import com.example.flightlog.domain.JumpEstimate
 import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.RideTotals
 import com.example.flightlog.domain.SensorQuality
@@ -87,7 +88,9 @@ object RideMath {
             rides = selectedRides.size,
             distanceMeters = selectedRides.sumOf { it.distanceMeters },
             movingTimeMillis = selectedRides.sumOf { it.movingTimeMillis },
-            confirmedJumps = confirmed.size,
+            confirmedJumps = confirmed.count { it.displayFlightKind == FlightKind.JUMP },
+            confirmedDrops = confirmed.count { it.displayFlightKind == FlightKind.DROP },
+            confirmedUncertainFlights = confirmed.count { it.displayFlightKind == FlightKind.UNCERTAIN },
             pendingJumps = selectedJumps.count { it.status == JumpStatus.PENDING },
             rejectedJumps = selectedJumps.count { it.status == JumpStatus.REJECTED },
             flightTimeSeconds = confirmed.sumOf { it.displayFlightSeconds },

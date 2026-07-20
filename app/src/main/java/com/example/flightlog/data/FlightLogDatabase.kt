@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         StopEventEntity::class, TrailPauseZoneEntity::class, TrailSectionEntity::class,
         TrailPassEntity::class, TrailStopObservationEntity::class, SectionEffortEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -31,7 +31,7 @@ abstract class FlightLogDatabase : RoomDatabase() {
                 context.applicationContext,
                 FlightLogDatabase::class.java,
                 "flightlog.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { instance = it }
         }
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -113,6 +113,14 @@ abstract class FlightLogDatabase : RoomDatabase() {
         val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("""CREATE TABLE jump_motion_traces (jumpId INTEGER NOT NULL, startedAt INTEGER NOT NULL, endedAt INTEGER NOT NULL, encodingVersion INTEGER NOT NULL, sampleCount INTEGER NOT NULL, payload BLOB NOT NULL, checksum TEXT NOT NULL, PRIMARY KEY(jumpId), FOREIGN KEY(jumpId) REFERENCES jump_events(id) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE jump_events ADD COLUMN estimatedFlightKind TEXT NOT NULL DEFAULT 'UNCERTAIN'")
+                db.execSQL("ALTER TABLE jump_events ADD COLUMN correctedFlightKind TEXT")
+                db.execSQL("ALTER TABLE jump_events ADD COLUMN flightKindConfidence INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

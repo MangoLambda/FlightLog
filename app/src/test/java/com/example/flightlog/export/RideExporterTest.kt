@@ -4,6 +4,7 @@ import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.data.RideEntity
 import com.example.flightlog.data.TrackPointEntity
 import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.SensorQuality
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -28,7 +29,10 @@ class RideExporterTest {
             estimatedFlightSeconds = .5, estimatedHeightMeters = .3, estimatedDistanceMeters = 4.0,
             correctedDistanceMeters = 4.5, confidence = 75, status = JumpStatus.CONFIRMED,
             sensorQuality = SensorQuality.ACCELEROMETER_ONLY,
+            estimatedFlightKind = FlightKind.DROP,
+            flightKindConfidence = 83,
         )))
         assertTrue(output.contains("CONFIRMED,75,0.500,0.300,4.500,ACCELEROMETER_ONLY"))
+        assertTrue(output.contains("ACCELEROMETER_ONLY,DROP,DROP,83"))
     }
 }

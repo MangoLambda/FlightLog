@@ -37,8 +37,8 @@ android {
         applicationId = "com.example.flightlog"
         minSdk = 29
         targetSdk = 36
-        versionCode = 43
-        versionName = "1.1.35"
+        versionCode = 44
+        versionName = "1.1.36"
 
         buildConfigField("String", "THUNDERFOREST_API_KEY", "\"$thunderforestApiKey\"")
         buildConfigField("String", "FLIGHTLOG_UPDATE_BASE_URL", "\"$flightLogUpdateBaseUrl\"")
@@ -69,7 +69,7 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "armeabi-v7a")
+            include("arm64-v8a")
             isUniversalApk = true
         }
     }

@@ -30,7 +30,7 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 object TrailAnalysis {
-    const val ANALYSIS_VERSION = 4
+    const val ANALYSIS_VERSION = 5
     const val EFFORT_VERSION = 4
     const val BIN_METERS = 5.0
     private const val MAX_GPS_ACCURACY_METERS = 25f
@@ -493,7 +493,12 @@ class RideProcessor(private val database: FlightLogDatabase) {
             return
         }
         val motionChunks = dao.telemetryChunks(rideId).filter { it.kind == TelemetryKind.MOTION }
-        val motionTelemetry = MotionTelemetry.merge(motionChunks.map { TelemetryCodec.decodeMotion(it.payload, it.checksum) })
+        val retainedJumpTelemetry = dao.jumps(rideId).mapNotNull { jump ->
+            dao.jumpMotionTrace(jump.id)?.let { trace -> runCatching { JumpMotionTrace.decode(trace) }.getOrNull() }
+        }
+        val motionTelemetry = MotionTelemetry.merge(
+            motionChunks.map { TelemetryCodec.decodeMotion(it.payload, it.checksum) } + retainedJumpTelemetry,
+        )
         val motion = motionTelemetry.accelerationFrames()
         val analyzedJumps = if (
             motionTelemetry.hasUsableSamples &&
@@ -504,6 +509,8 @@ class RideProcessor(private val database: FlightLogDatabase) {
                 jump.copy(
                     estimatedHeightMeters = analysis.airtimeHeightMeters,
                     confidence = analysis.estimatedConfidence,
+                    estimatedFlightKind = analysis.estimatedFlightKind,
+                    flightKindConfidence = analysis.flightKindConfidence,
                 )
             }
         } else {

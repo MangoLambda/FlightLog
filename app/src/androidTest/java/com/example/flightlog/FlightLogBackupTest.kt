@@ -22,6 +22,7 @@ import com.example.flightlog.domain.PauseZoneState
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.domain.SensorQuality
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.export.FlightLogBackup
 import com.example.flightlog.tracking.JumpMotionTrace
 import com.example.flightlog.tracking.MotionTelemetry
@@ -49,6 +50,8 @@ class FlightLogBackupTest {
             rideId = rideId, takeoffAt = 1_200, landingAt = 1_500,
             estimatedFlightSeconds = .3, estimatedHeightMeters = .1, estimatedDistanceMeters = 1.5,
             confidence = 80, sensorQuality = SensorQuality.FULL,
+            estimatedFlightKind = FlightKind.JUMP, correctedFlightKind = FlightKind.DROP,
+            flightKindConfidence = 84,
         ))
         source.dao().insertJumpMotionTrace(JumpMotionTrace.encode(jumpId, MotionTelemetry(
             accelerometer = listOf(
@@ -110,6 +113,8 @@ class FlightLogBackupTest {
         val importedRideId = destination.dao().allRides().single().id
         assertEquals(1, destination.dao().telemetryChunks(importedRideId).size)
         val importedJump = destination.dao().jumps(importedRideId).single()
+        assertEquals(FlightKind.DROP, importedJump.displayFlightKind)
+        assertEquals(84, importedJump.flightKindConfidence)
         assertEquals(2, destination.dao().jumpMotionTrace(importedJump.id)?.sampleCount)
         assertEquals(10.0, destination.dao().spatialProfiles(importedRideId).single().altitudeMeters!!, .01)
         assertEquals(1_234L, destination.dao().spatialProfiles(importedRideId).single().maximumSampleGapMillis)

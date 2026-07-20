@@ -3,6 +3,7 @@ package com.example.flightlog.tracking
 import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.data.RideEntity
 import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.SensorQuality
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
@@ -47,15 +48,17 @@ class RideMathTest {
             confidence = 80, sensorQuality = SensorQuality.FULL,
         )
         val totals = RideMath.aggregate(rides, listOf(
-            base.copy(status = JumpStatus.CONFIRMED),
-            base.copy(id = 2, status = JumpStatus.PENDING),
+            base.copy(status = JumpStatus.CONFIRMED, estimatedFlightKind = FlightKind.JUMP),
+            base.copy(id = 2, status = JumpStatus.PENDING, estimatedFlightKind = FlightKind.DROP),
             base.copy(id = 3, status = JumpStatus.REJECTED),
+            base.copy(id = 4, status = JumpStatus.CONFIRMED, estimatedFlightKind = FlightKind.JUMP, correctedFlightKind = FlightKind.DROP),
         ))
         assertEquals(1, totals.confirmedJumps)
+        assertEquals(1, totals.confirmedDrops)
         assertEquals(1, totals.pendingJumps)
         assertEquals(1, totals.rejectedJumps)
-        assertEquals(.5, totals.flightTimeSeconds, 0.0)
-        assertEquals(4.0, totals.jumpedDistanceMeters, 0.0)
+        assertEquals(1.0, totals.flightTimeSeconds, 0.0)
+        assertEquals(8.0, totals.jumpedDistanceMeters, 0.0)
     }
 
     @Test fun calendarSeasonUsesRequestedTimezone() {

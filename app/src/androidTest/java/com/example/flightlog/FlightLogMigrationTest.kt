@@ -52,13 +52,14 @@ class FlightLogMigrationTest {
                 FlightLogDatabase.MIGRATION_3_4,
                 FlightLogDatabase.MIGRATION_4_5,
                 FlightLogDatabase.MIGRATION_5_6,
+                FlightLogDatabase.MIGRATION_6_7,
             ).build()
         val ride = runBlocking { database.dao().ride(1) }
         val points = runBlocking { database.dao().trackPoints(1) }
         assertNotNull(ride)
         UUID.fromString(ride!!.uuid)
         assertEquals(1, points.size)
-        assertEquals(6, database.openHelper.readableDatabase.version)
+        assertEquals(7, database.openHelper.readableDatabase.version)
         database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM jump_motion_traces").use {
             assertEquals(true, it.moveToFirst())
             assertEquals(0, it.getInt(0))

@@ -50,6 +50,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.flightlog.data.JumpEventEntity
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.data.TrackPointEntity
 import com.example.flightlog.maps.MapProvider
 import com.example.flightlog.maps.MapStyle
@@ -738,7 +739,12 @@ private fun updateMap(
             val coordinate = jumpCoordinates.getValue(jump).center ?: return@mapNotNull null
             Feature.fromGeometry(Point.fromLngLat(coordinate.longitude, coordinate.latitude)).apply {
                 addNumberProperty("jumpId", jump.id)
-                addStringProperty("label", numbers[jump.id]?.toString() ?: "")
+                val prefix = when (jump.displayFlightKind) {
+                    FlightKind.JUMP -> "J"
+                    FlightKind.DROP -> "D"
+                    FlightKind.UNCERTAIN -> "?"
+                }
+                addStringProperty("label", "$prefix${numbers[jump.id] ?: ""}")
                 addBooleanProperty("selected", jump.id == selectedJumpId)
             }
         }

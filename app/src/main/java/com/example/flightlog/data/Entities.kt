@@ -6,6 +6,7 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.RideState
 import com.example.flightlog.domain.SensorQuality
 import com.example.flightlog.domain.MountingMode
@@ -79,12 +80,16 @@ data class JumpEventEntity(
     val confidence: Int,
     val status: JumpStatus = JumpStatus.CONFIRMED,
     val sensorQuality: SensorQuality,
+    @ColumnInfo(defaultValue = "'UNCERTAIN'") val estimatedFlightKind: FlightKind = FlightKind.UNCERTAIN,
+    val correctedFlightKind: FlightKind? = null,
+    @ColumnInfo(defaultValue = "0") val flightKindConfidence: Int = 0,
     val latitude: Double? = null,
     val longitude: Double? = null,
 ) {
     val displayFlightSeconds get() = correctedFlightSeconds ?: estimatedFlightSeconds
     val displayHeightMeters get() = correctedHeightMeters ?: estimatedHeightMeters
     val displayDistanceMeters get() = correctedDistanceMeters ?: estimatedDistanceMeters
+    val displayFlightKind get() = correctedFlightKind ?: estimatedFlightKind
 }
 
 @Entity(

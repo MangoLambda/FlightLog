@@ -78,6 +78,7 @@ import com.example.flightlog.data.BulkRideDeleteResult
 import com.example.flightlog.domain.AggregatePeriod
 import com.example.flightlog.domain.EffortInvalidReason
 import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.TrailState
 import com.example.flightlog.domain.RideState
@@ -412,6 +413,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onSelectJump = vm::selectJump,
                         onOpenJump = vm::openJump,
                         onStatus = vm::setJumpStatus,
+                        onFlightKind = vm::setFlightKind,
                         onShare = { selectedRideId?.let(vm::shareRide) },
                         onDelete = { selectedRideId?.let(vm::deleteRide) },
                         deletesReferencedTrail = trails.any { it.canonicalRideId == selectedRideId },
@@ -430,6 +432,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         mapStyle = mapStyle,
                         imperial = imperial,
                         onBack = { vm.screen.value = AppScreen.REVIEW },
+                        onFlightKind = { kind -> selectedJumpId?.let { vm.setFlightKind(it, kind) } },
                         onConfigureMap = openMapSettings,
                     )
                     AppScreen.TRAIL_DETAIL -> TrailDetailScreen(
@@ -986,6 +989,7 @@ private fun ReviewScreen(
     onSelectJump: (Long) -> Unit,
     onOpenJump: (Long) -> Unit,
     onStatus: (Long, JumpStatus) -> Unit,
+    onFlightKind: (Long, FlightKind?) -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
     deletesReferencedTrail: Boolean,
@@ -1136,7 +1140,8 @@ private fun ReviewScreen(
                         )
                     }
                     Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        Metric("JUMPS", jumps.count { it.status == JumpStatus.CONFIRMED }.toString())
+                        Metric("JUMPS", jumps.count { it.status == JumpStatus.CONFIRMED && it.displayFlightKind == FlightKind.JUMP }.toString())
+                        Metric("DROPS", jumps.count { it.status == JumpStatus.CONFIRMED && it.displayFlightKind == FlightKind.DROP }.toString())
                         Metric("AIRTIME", String.format(Locale.US, "%.1fs", jumps.filter { it.status == JumpStatus.CONFIRMED }.sumOf { it.displayFlightSeconds }))
                     }
                 }
@@ -1157,6 +1162,7 @@ private fun ReviewScreen(
                         onSelect = { onSelectJump(jump.id) },
                         onOpen = { onOpenJump(jump.id) },
                         onStatus = { onStatus(jump.id, it) },
+                        onFlightKind = { onFlightKind(jump.id, it) },
                     )
                 }
             }
@@ -1175,6 +1181,7 @@ private fun JumpCard(
     onSelect: () -> Unit,
     onOpen: () -> Unit,
     onStatus: (JumpStatus) -> Unit,
+    onFlightKind: (FlightKind?) -> Unit,
 ) {
     Card(
         onClick = onSelect,
@@ -1186,7 +1193,7 @@ private fun JumpCard(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Jump $number", fontWeight = FontWeight.Bold)
+                    Text("${jump.displayFlightKind.displayName()} $number", fontWeight = FontWeight.Bold)
                     if (gpsConfirmed) {
                         Icon(
                             imageVector = Icons.Filled.Star,
@@ -1199,6 +1206,7 @@ private fun JumpCard(
                 SuggestionChip(onClick = {}, label = { Text("${jump.confidence}% confidence") })
             }
             Text("${String.format(Locale.US, "%.2fs", jump.displayFlightSeconds)} • ${formatHeight(jump.displayHeightMeters, imperial)} high • ${formatDistance(jump.displayDistanceMeters, imperial)} long")
+            FlightKindSelector(jump, onFlightKind)
             peakGForce?.let {
                 Text(
                     "Peak ${String.format(Locale.US, "%.1f g", it)} • ${PEAK_G_FILTER_MILLIS} ms filtered",
@@ -1228,6 +1236,33 @@ private fun JumpCard(
 }
 
 @Composable
+private fun FlightKindSelector(jump: JumpEventEntity, onFlightKind: (FlightKind?) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlightKind.entries.forEach { kind ->
+                FilterChip(
+                    selected = jump.displayFlightKind == kind,
+                    onClick = { onFlightKind(kind) },
+                    label = { Text(kind.displayName()) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        if (jump.correctedFlightKind != null) {
+            TextButton(onClick = { onFlightKind(null) }) {
+                Text("Use automatic (${jump.estimatedFlightKind.displayName()})")
+            }
+        }
+    }
+}
+
+private fun FlightKind.displayName(): String = when (this) {
+    FlightKind.JUMP -> "Jump"
+    FlightKind.DROP -> "Drop"
+    FlightKind.UNCERTAIN -> "Uncertain"
+}
+
+@Composable
 private fun JumpDetailScreen(
     jump: JumpEventEntity?,
     jumpNumber: Int?,
@@ -1238,6 +1273,7 @@ private fun JumpDetailScreen(
     mapStyle: MapStyle,
     imperial: Boolean,
     onBack: () -> Unit,
+    onFlightKind: (FlightKind?) -> Unit,
     onConfigureMap: () -> Unit,
 ) {
     if (jump == null) { EmptyCard("Jump unavailable", "Return to the ride review."); return }
@@ -1255,7 +1291,7 @@ private fun JumpDetailScreen(
     val sensorAnalysis = remember(jump, motion, mountingMode) { JumpSensorAnalyzer.analyze(jump, motion, mountingMode) }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("Jump ${jumpNumber ?: ""}".trim()) },
+            title = { Text("${jump.displayFlightKind.displayName()} ${jumpNumber ?: ""}".trim()) },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             colors = flightLogTopAppBarColors(),
             windowInsets = WindowInsets(0, 0, 0, 0),
@@ -1284,7 +1320,7 @@ private fun JumpDetailScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Text("JUMP ESTIMATE", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
+                        Text("${jump.displayFlightKind.displayName().uppercase()} ESTIMATE", color = TrailCyan, style = MaterialTheme.typography.labelLarge)
                         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Row(Modifier.fillMaxWidth()) {
                                 JumpDetailMetric("FLIGHT", String.format(Locale.US, "%.2f s", jump.displayFlightSeconds), Modifier.weight(1f))
@@ -1301,6 +1337,8 @@ private fun JumpDetailScreen(
                             }
                         }
                         Text("${jump.confidence}% confidence • ${jump.sensorQuality.name.lowercase().replace('_', ' ')}")
+                        Text("Type confidence ${jump.flightKindConfidence}%${if (jump.correctedFlightKind != null) " • rider corrected" else ""}")
+                        FlightKindSelector(jump, onFlightKind)
                     }
                 }
             }
@@ -1924,11 +1962,12 @@ private fun StatsScreen(rides: List<RideEntity>, jumps: List<JumpEventEntity>, i
                     HorizontalDivider()
                     Text("Flight", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Metric("CONFIRMED", totals.confirmedJumps.toString())
+                        Metric("JUMPS", totals.confirmedJumps.toString())
+                        Metric("DROPS", totals.confirmedDrops.toString())
                         Metric("AIRTIME", String.format(Locale.US, "%.1fs", totals.flightTimeSeconds))
-                        Metric("JUMPED", formatDistance(totals.jumpedDistanceMeters, imperial))
+                        Metric("FLOWN", formatDistance(totals.jumpedDistanceMeters, imperial))
                     }
-                    Text("${totals.pendingJumps} pending • ${totals.rejectedJumps} discarded", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("${totals.confirmedUncertainFlights} uncertain • ${totals.pendingJumps} pending • ${totals.rejectedJumps} discarded", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

@@ -2,6 +2,7 @@ package com.example.flightlog.tracking
 
 import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.domain.MountingMode
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.SensorQuality
 import kotlin.math.abs
 import kotlin.math.acos
@@ -31,6 +32,10 @@ data class JumpSensorAnalysis(
     val maximumRotationDegrees: Double?,
     val airtimeHeightMeters: Double,
     val estimatedConfidence: Int,
+    val estimatedFlightKind: FlightKind,
+    val flightKindConfidence: Int,
+    val upwardLaunchImpulseMps: Double?,
+    val upwardLaunchPeakMps2: Double?,
     val worldVerticalAcceleration: List<TimedValue>,
 )
 
@@ -69,6 +74,15 @@ object JumpSensorAnalyzer {
             orientationCoverage = orientationCoverage,
             maximumRotationDegrees = maximumRotation,
         )
+        val classification = classifyFlight(
+            jump = jump,
+            mountingMode = mountingMode,
+            accelerationRate = accelerationRate,
+            orientationRate = orientationRate,
+            orientationCoverage = orientationCoverage,
+            oriented = oriented,
+            maximumRotationDegrees = maximumRotation,
+        )
         return JumpSensorAnalysis(
             accelerometerRate = accelerationRate,
             gyroscopeRate = gyroscopeRate,
@@ -78,8 +92,78 @@ object JumpSensorAnalyzer {
             maximumRotationDegrees = maximumRotation,
             airtimeHeightMeters = airtimeHeight,
             estimatedConfidence = confidence,
+            estimatedFlightKind = classification.kind,
+            flightKindConfidence = classification.confidence,
+            upwardLaunchImpulseMps = classification.impulse,
+            upwardLaunchPeakMps2 = classification.peak,
             worldVerticalAcceleration = oriented,
         )
+    }
+
+    private data class FlightClassification(
+        val kind: FlightKind,
+        val confidence: Int,
+        val impulse: Double? = null,
+        val peak: Double? = null,
+    )
+
+    private fun classifyFlight(
+        jump: JumpEventEntity,
+        mountingMode: MountingMode?,
+        accelerationRate: SensorRateSummary,
+        orientationRate: SensorRateSummary,
+        orientationCoverage: Double,
+        oriented: List<TimedValue>,
+        maximumRotationDegrees: Double?,
+    ): FlightClassification {
+        if (orientationCoverage < 0.8 ||
+            accelerationRate.sampleCount < 20 ||
+            accelerationRate.maximumGapMillis?.let { it > MAX_ORIENTATION_SUPPORT_MILLIS } != false ||
+            orientationRate.maximumGapMillis?.let { it > MAX_ORIENTATION_SUPPORT_MILLIS } != false
+        ) return FlightClassification(FlightKind.UNCERTAIN, 0)
+
+        val baseline = oriented.filter { it.timestampMillis in (jump.takeoffAt - 1_000)..(jump.takeoffAt - 500) }
+            .map { it.value }.median() ?: return FlightClassification(FlightKind.UNCERTAIN, 0)
+        val launch = oriented.filter { it.timestampMillis in (jump.takeoffAt - 350)..jump.takeoffAt }
+            .map { TimedValue(it.timestampMillis, it.value - baseline) }
+        if (launch.size < 8 || launch.last().timestampMillis - launch.first().timestampMillis < 200) {
+            return FlightClassification(FlightKind.UNCERTAIN, 0)
+        }
+        val peak = launch.maxOf { it.value }
+        val impulse = launch.zipWithNext().sumOf { (a, b) ->
+            val seconds = (b.timestampMillis - a.timestampMillis).coerceIn(0, 50) / 1_000.0
+            ((a.value + b.value) / 2.0).coerceAtLeast(0.0) * seconds
+        }
+        val pocket = mountingMode != MountingMode.BIKE_MOUNTED
+        val jumpImpulse = if (pocket) 0.90 else 0.65
+        val jumpPeak = if (pocket) 4.0 else 3.0
+        val dropImpulse = if (pocket) 0.30 else 0.25
+        val kind = when {
+            impulse >= jumpImpulse && peak >= jumpPeak -> FlightKind.JUMP
+            impulse <= dropImpulse && peak < jumpPeak -> FlightKind.DROP
+            else -> FlightKind.UNCERTAIN
+        }
+        val confidence = when (kind) {
+            FlightKind.JUMP -> (60.0 + 30.0 * minOf(1.0, minOf(
+                (impulse - jumpImpulse) / jumpImpulse,
+                (peak - jumpPeak) / jumpPeak,
+            ).coerceAtLeast(0.0))).toInt()
+            FlightKind.DROP -> (60.0 + 30.0 * minOf(1.0, minOf(
+                (dropImpulse - impulse) / dropImpulse,
+                (jumpPeak - peak) / jumpPeak,
+            ).coerceAtLeast(0.0))).toInt()
+            FlightKind.UNCERTAIN -> 0
+        }
+        val qualityPenalty = when (jump.sensorQuality) {
+            SensorQuality.FULL -> 0
+            SensorQuality.ACCELEROMETER_ONLY -> 10
+            SensorQuality.DEGRADED -> 20
+        }
+        val rotationThreshold = if (pocket) 60.0 else 90.0
+        val rotationPenalty = maximumRotationDegrees?.let {
+            ((it - rotationThreshold).coerceAtLeast(0.0) / 10.0).toInt().coerceAtMost(15)
+        } ?: 0
+        return FlightClassification(kind, (confidence - qualityPenalty - rotationPenalty).coerceIn(0, 90), impulse, peak)
     }
 
     private fun confidence(
@@ -223,6 +307,10 @@ object JumpSensorAnalyzer {
     )
     private fun List<Long>.medianMillis(): Double? = if (isEmpty()) null else sorted().let { values ->
         if (values.size % 2 == 1) values[values.size / 2].toDouble()
+        else (values[values.size / 2 - 1] + values[values.size / 2]) / 2.0
+    }
+    private fun List<Double>.median(): Double? = if (isEmpty()) null else sorted().let { values ->
+        if (values.size % 2 == 1) values[values.size / 2]
         else (values[values.size / 2 - 1] + values[values.size / 2]) / 2.0
     }
 }

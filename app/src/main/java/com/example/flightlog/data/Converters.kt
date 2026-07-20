@@ -2,6 +2,7 @@ package com.example.flightlog.data
 
 import androidx.room.TypeConverter
 import com.example.flightlog.domain.JumpStatus
+import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.RideState
 import com.example.flightlog.domain.SensorQuality
 import com.example.flightlog.domain.MountingMode
@@ -18,6 +19,8 @@ class Converters {
     @TypeConverter fun rideState(value: RideState) = value.name
     @TypeConverter fun jumpStatus(value: String) = JumpStatus.valueOf(value)
     @TypeConverter fun jumpStatus(value: JumpStatus) = value.name
+    @TypeConverter fun flightKind(value: String?) = value?.let(FlightKind::valueOf)
+    @TypeConverter fun flightKind(value: FlightKind?) = value?.name
     @TypeConverter fun sensorQuality(value: String) = SensorQuality.valueOf(value)
     @TypeConverter fun sensorQuality(value: SensorQuality) = value.name
     @TypeConverter fun mountingMode(value: String?) = value?.let(MountingMode::valueOf)
