@@ -118,6 +118,7 @@ import com.example.flightlog.ui.accelerationTrace
 import com.example.flightlog.ui.PEAK_G_FILTER_MILLIS
 import com.example.flightlog.ui.jumpNumbers
 import com.example.flightlog.ui.jumpContextPoints
+import com.example.flightlog.ui.initialReviewJumpId
 import com.example.flightlog.ui.routeForRange
 import com.example.flightlog.ui.pointAtDistance
 import com.example.flightlog.ui.prePumpSpeedMetersPerSecond
@@ -1021,7 +1022,12 @@ private fun ReviewScreen(
     val jumpListState = rememberLazyListState()
     val pendingCount = jumps.count { it.status == JumpStatus.PENDING }
     var focusFastestSegmentKey by rememberSaveable(ride.id) { mutableIntStateOf(0) }
-    var expandedPendingJumpId by rememberSaveable(ride.id) { mutableStateOf<Long?>(null) }
+    var expandedJumpId by rememberSaveable(ride.id) { mutableStateOf<Long?>(null) }
+    LaunchedEffect(ride.id, jumps) {
+        initialReviewJumpId(jumps, selectedJumpId)?.let { initialJumpId ->
+            if (initialJumpId != selectedJumpId) onSelectJump(initialJumpId)
+        }
+    }
     LaunchedEffect(selectedJumpId, jumps) {
         val index = jumps.indexOfFirst { it.id == selectedJumpId }
         if (index >= 0) jumpListState.animateScrollToItem(1 + (if (pendingCount > 0) 1 else 0) + index)
@@ -1178,20 +1184,18 @@ private fun ReviewScreen(
                         peakGForce = peakGForces[jump.id],
                         gpsConfirmed = flightGpsSpeedSamples(jump, points).isNotEmpty(),
                         selected = jump.id == selectedJumpId,
-                        expanded = jump.status == JumpStatus.PENDING && jump.id == expandedPendingJumpId && jump.id == selectedJumpId,
+                        expanded = jump.id == expandedJumpId,
                         points = points,
-                        motion = selectedJumpMotion,
+                        motion = selectedJumpMotion.takeIf { jump.id == selectedJumpId } ?: MotionTelemetry.EMPTY,
                         mountingMode = ride.mountingMode,
                         mapApiKey = mapApiKey,
                         mapStyle = mapStyle,
                         onConfigureMap = onConfigureMap,
                         onSelect = {
                             onSelectJump(jump.id)
-                            if (jump.status == JumpStatus.PENDING) {
-                                expandedPendingJumpId = if (expandedPendingJumpId == jump.id && selectedJumpId == jump.id) null else jump.id
-                            }
+                            expandedJumpId = if (expandedJumpId == jump.id) null else jump.id
                         },
-                        onCollapseEvidence = { expandedPendingJumpId = null },
+                        onCollapseEvidence = { expandedJumpId = null },
                         onOpen = { onOpenJump(jump.id) },
                         onStatus = { onStatus(jump.id, it) },
                         onFlightKind = { onFlightKind(jump.id, it) },
@@ -1266,11 +1270,11 @@ private fun JumpCard(
                     onCollapse = onCollapseEvidence,
                 )
             }
+            if (!expanded) {
+                TextButton(onClick = onSelect) { Text("Review evidence") }
+            }
             when (jump.status) {
                 JumpStatus.PENDING -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (!expanded) {
-                        TextButton(onClick = onSelect) { Text("Review evidence") }
-                    }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { onStatus(JumpStatus.CONFIRMED) }, modifier = Modifier.weight(1f)) { Text("Confirm") }
                         OutlinedButton(onClick = onOpen, modifier = Modifier.weight(1f)) { Text("View flight") }

@@ -23,6 +23,25 @@ class JumpPresentationTest {
         assertEquals(3, numbers[40])
     }
 
+    @Test fun initialReviewSelectionPrefersTheFirstPendingJump() {
+        val jumps = listOf(
+            jump(id = 1, takeoffAt = 1_000, status = JumpStatus.CONFIRMED),
+            jump(id = 2, takeoffAt = 3_000, status = JumpStatus.PENDING),
+            jump(id = 3, takeoffAt = 2_000, status = JumpStatus.PENDING),
+        )
+
+        assertEquals(3L, initialReviewJumpId(jumps, selectedJumpId = null))
+    }
+
+    @Test fun initialReviewSelectionKeepsAValidExistingSelection() {
+        val jumps = listOf(
+            jump(id = 1, takeoffAt = 1_000, status = JumpStatus.CONFIRMED),
+            jump(id = 2, takeoffAt = 2_000, status = JumpStatus.PENDING),
+        )
+
+        assertEquals(1L, initialReviewJumpId(jumps, selectedJumpId = 1))
+    }
+
     @Test fun mapCoordinatesUseGpsTimesForEndpointsAndStoredCoordinateForNumber() {
         val jump = jump(id = 7, takeoffAt = 1_000).copy(
             landingAt = 1_600,

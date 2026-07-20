@@ -2,6 +2,7 @@ package com.example.flightlog.ui
 
 import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.data.TrackPointEntity
+import com.example.flightlog.domain.JumpStatus
 import com.example.flightlog.tracking.JumpMotionTrace
 import com.example.flightlog.tracking.MotionSample
 import kotlin.math.abs
@@ -29,6 +30,14 @@ internal fun jumpNumbers(jumps: List<JumpEventEntity>): Map<Long, Int> =
     jumps.sortedWith(compareBy(JumpEventEntity::takeoffAt, JumpEventEntity::id))
         .mapIndexed { index, jump -> jump.id to index + 1 }
         .toMap()
+
+internal fun initialReviewJumpId(jumps: List<JumpEventEntity>, selectedJumpId: Long?): Long? {
+    if (jumps.any { it.id == selectedJumpId }) return selectedJumpId
+    return jumps.asSequence()
+        .sortedWith(compareBy<JumpEventEntity>({ it.status != JumpStatus.PENDING }, { it.takeoffAt }, { it.id }))
+        .firstOrNull()
+        ?.id
+}
 
 internal fun jumpMapCoordinates(jump: JumpEventEntity, points: List<TrackPointEntity>): JumpMapCoordinates {
     val stored = if (jump.latitude != null && jump.longitude != null) {
