@@ -2,6 +2,7 @@ package com.example.flightlog.ui
 
 import com.example.flightlog.data.JumpEventEntity
 import com.example.flightlog.data.TrackPointEntity
+import com.example.flightlog.tracking.JumpMotionTrace
 import com.example.flightlog.tracking.MotionSample
 import kotlin.math.abs
 import kotlin.math.sqrt
@@ -39,6 +40,14 @@ internal fun jumpMapCoordinates(jump: JumpEventEntity, points: List<TrackPointEn
     val landing = points.nearestMapCoordinate(jump.landingAt)
     val center = stored ?: midpoint(takeoff, landing) ?: takeoff ?: landing
     return JumpMapCoordinates(center, takeoff ?: stored, landing ?: stored)
+}
+
+internal fun jumpContextPoints(jump: JumpEventEntity, points: List<TrackPointEntity>): List<TrackPointEntity> {
+    val window = (jump.takeoffAt - JumpMotionTrace.PRE_TAKEOFF_MILLIS)..
+        (jump.landingAt + JumpMotionTrace.POST_LANDING_MILLIS)
+    return points.filter { it.recordedAt in window }.ifEmpty {
+        points.sortedBy { abs(it.recordedAt - jump.takeoffAt) }.take(20).sortedBy { it.recordedAt }
+    }
 }
 
 private fun List<TrackPointEntity>.nearestMapCoordinate(timestamp: Long): MapCoordinate? {

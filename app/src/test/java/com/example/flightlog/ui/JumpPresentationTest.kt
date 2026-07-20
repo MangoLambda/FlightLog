@@ -53,6 +53,28 @@ class JumpPresentationTest {
         assertEquals(-73.51, coordinates.center?.longitude ?: 0.0, .0001)
     }
 
+    @Test fun contextPointsUseTheSensorWindowAroundTheFlight() {
+        val jump = jump(id = 8, takeoffAt = 20_000).copy(landingAt = 20_500)
+        val points = listOf(
+            trackPoint(9_999, 45.0, -73.0),
+            trackPoint(10_000, 45.1, -73.1),
+            trackPoint(20_000, 45.2, -73.2),
+            trackPoint(30_500, 45.3, -73.3),
+            trackPoint(30_501, 45.4, -73.4),
+        )
+
+        assertEquals(listOf(10_000L, 20_000L, 30_500L), jumpContextPoints(jump, points).map { it.recordedAt })
+    }
+
+    @Test fun contextPointsFallBackToNearestRouteFixes() {
+        val jump = jump(id = 8, takeoffAt = 100_000)
+        val points = listOf(70_000L, 80_000L, 120_000L, 130_000L).mapIndexed { index, timestamp ->
+            trackPoint(timestamp, 45.0 + index, -73.0)
+        }
+
+        assertEquals(listOf(70_000L, 80_000L, 120_000L, 130_000L), jumpContextPoints(jump, points).map { it.recordedAt })
+    }
+
     @Test fun accelerationIsRelativeToTakeoff() {
         val jump = jump(id = 1, takeoffAt = 1_000)
         val acceleration = accelerationTrace(jump, listOf(

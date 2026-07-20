@@ -117,6 +117,7 @@ import com.example.flightlog.ui.flightLogTopAppBarColors
 import com.example.flightlog.ui.accelerationTrace
 import com.example.flightlog.ui.PEAK_G_FILTER_MILLIS
 import com.example.flightlog.ui.jumpNumbers
+import com.example.flightlog.ui.jumpContextPoints
 import com.example.flightlog.ui.routeForRange
 import com.example.flightlog.ui.pointAtDistance
 import com.example.flightlog.ui.prePumpSpeedMetersPerSecond
@@ -136,7 +137,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
-import kotlin.math.abs
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -414,6 +414,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         jumps = selectedJumps,
                         peakGForces = selectedRidePeakGForces,
                         stops = selectedStops,
+                        selectedJumpMotion = selectedJumpMotion,
                         mapApiKey = effectiveMapApiKey,
                         mapStyle = mapStyle,
                         imperial = imperial,
@@ -997,6 +998,7 @@ private fun ReviewScreen(
     jumps: List<JumpEventEntity>,
     peakGForces: Map<Long, Double>,
     stops: List<StopEventEntity>,
+    selectedJumpMotion: MotionTelemetry,
     mapApiKey: String,
     mapStyle: MapStyle,
     imperial: Boolean,
@@ -1019,6 +1021,7 @@ private fun ReviewScreen(
     val jumpListState = rememberLazyListState()
     val pendingCount = jumps.count { it.status == JumpStatus.PENDING }
     var focusFastestSegmentKey by rememberSaveable(ride.id) { mutableIntStateOf(0) }
+    var expandedPendingJumpId by rememberSaveable(ride.id) { mutableStateOf<Long?>(null) }
     LaunchedEffect(selectedJumpId, jumps) {
         val index = jumps.indexOfFirst { it.id == selectedJumpId }
         if (index >= 0) jumpListState.animateScrollToItem(1 + (if (pendingCount > 0) 1 else 0) + index)
@@ -1175,7 +1178,20 @@ private fun ReviewScreen(
                         peakGForce = peakGForces[jump.id],
                         gpsConfirmed = flightGpsSpeedSamples(jump, points).isNotEmpty(),
                         selected = jump.id == selectedJumpId,
-                        onSelect = { onSelectJump(jump.id) },
+                        expanded = jump.status == JumpStatus.PENDING && jump.id == expandedPendingJumpId && jump.id == selectedJumpId,
+                        points = points,
+                        motion = selectedJumpMotion,
+                        mountingMode = ride.mountingMode,
+                        mapApiKey = mapApiKey,
+                        mapStyle = mapStyle,
+                        onConfigureMap = onConfigureMap,
+                        onSelect = {
+                            onSelectJump(jump.id)
+                            if (jump.status == JumpStatus.PENDING) {
+                                expandedPendingJumpId = if (expandedPendingJumpId == jump.id && selectedJumpId == jump.id) null else jump.id
+                            }
+                        },
+                        onCollapseEvidence = { expandedPendingJumpId = null },
                         onOpen = { onOpenJump(jump.id) },
                         onStatus = { onStatus(jump.id, it) },
                         onFlightKind = { onFlightKind(jump.id, it) },
@@ -1194,7 +1210,15 @@ private fun JumpCard(
     peakGForce: Double?,
     gpsConfirmed: Boolean,
     selected: Boolean,
+    expanded: Boolean,
+    points: List<TrackPointEntity>,
+    motion: MotionTelemetry,
+    mountingMode: MountingMode?,
+    mapApiKey: String,
+    mapStyle: MapStyle,
+    onConfigureMap: () -> Unit,
     onSelect: () -> Unit,
+    onCollapseEvidence: () -> Unit,
     onOpen: () -> Unit,
     onStatus: (JumpStatus) -> Unit,
     onFlightKind: (FlightKind?) -> Unit,
@@ -1230,8 +1254,23 @@ private fun JumpCard(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+            if (expanded) {
+                PendingJumpEvidence(
+                    jump = jump,
+                    ridePoints = points,
+                    motion = motion,
+                    mountingMode = mountingMode,
+                    mapApiKey = mapApiKey,
+                    mapStyle = mapStyle,
+                    onConfigureMap = onConfigureMap,
+                    onCollapse = onCollapseEvidence,
+                )
+            }
             when (jump.status) {
                 JumpStatus.PENDING -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (!expanded) {
+                        TextButton(onClick = onSelect) { Text("Review evidence") }
+                    }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { onStatus(JumpStatus.CONFIRMED) }, modifier = Modifier.weight(1f)) { Text("Confirm") }
                         OutlinedButton(onClick = onOpen, modifier = Modifier.weight(1f)) { Text("View flight") }
@@ -1248,6 +1287,70 @@ private fun JumpCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PendingJumpEvidence(
+    jump: JumpEventEntity,
+    ridePoints: List<TrackPointEntity>,
+    motion: MotionTelemetry,
+    mountingMode: MountingMode?,
+    mapApiKey: String,
+    mapStyle: MapStyle,
+    onConfigureMap: () -> Unit,
+    onCollapse: () -> Unit,
+) {
+    val contextPoints = remember(jump.id, ridePoints) { jumpContextPoints(jump, ridePoints) }
+    val acceleration = remember(jump.id, motion) { accelerationTrace(jump, motion.accelerationFrames()) }
+    val sensorAnalysis = remember(jump, motion, mountingMode) { JumpSensorAnalyzer.analyze(jump, motion, mountingMode) }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Review evidence", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        if ((jump.latitude != null && jump.longitude != null) || contextPoints.isNotEmpty()) {
+            Surface(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().height(190.dp)) {
+                Box {
+                    TrailMap(
+                        points = contextPoints,
+                        jumps = listOf(jump),
+                        apiKey = mapApiKey,
+                        mapStyle = mapStyle,
+                        modifier = Modifier.fillMaxSize(),
+                        onConfigureMap = onConfigureMap,
+                        selectedJumpId = jump.id,
+                    )
+                    Surface(
+                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(width = 132.dp, height = 92.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        shadowElevation = 4.dp,
+                    ) {
+                        TrailMap(
+                            points = ridePoints,
+                            jumps = listOf(jump),
+                            highlightedPoints = contextPoints,
+                            apiKey = mapApiKey,
+                            mapStyle = mapStyle,
+                            modifier = Modifier.fillMaxSize(),
+                            onConfigureMap = onConfigureMap,
+                            fitRoute = true,
+                            selectedJumpId = jump.id,
+                            focusSelectedJump = false,
+                        )
+                    }
+                }
+            }
+            Text(
+                "Local route with full-ride locator • green takeoff • orange landing",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        AccelerationTraceChart(
+            trace = acceleration,
+            verticalTrace = sensorAnalysis.worldVerticalAcceleration,
+            takeoffAt = jump.takeoffAt,
+            flightMillis = jump.landingAt - jump.takeoffAt,
+        )
+        TextButton(onClick = onCollapse, modifier = Modifier.align(Alignment.End)) { Text("Hide evidence") }
     }
 }
 
@@ -1293,12 +1396,7 @@ private fun JumpDetailScreen(
     onConfigureMap: () -> Unit,
 ) {
     if (jump == null) { EmptyCard("Jump unavailable", "Return to the ride review."); return }
-    val nearbyPoints = remember(jump.id, points) {
-        val window = (jump.takeoffAt - JumpMotionTrace.PRE_TAKEOFF_MILLIS)..(jump.landingAt + JumpMotionTrace.POST_LANDING_MILLIS)
-        points.filter { it.recordedAt in window }.ifEmpty {
-            points.sortedBy { abs(it.recordedAt - jump.takeoffAt) }.take(20).sortedBy { it.recordedAt }
-        }
-    }
+    val nearbyPoints = remember(jump.id, points) { jumpContextPoints(jump, points) }
     val acceleration = remember(jump.id, motion) { accelerationTrace(jump, motion.accelerationFrames()) }
     val prePumpSpeed = remember(jump.id, acceleration, points) {
         prePumpSpeedMetersPerSecond(jump, acceleration, points)
