@@ -154,7 +154,6 @@ fun TrailMap(
     onBoundaryStartChange: ((TrackPointEntity) -> Unit)? = null,
     onBoundaryEndChange: ((TrackPointEntity) -> Unit)? = null,
     selectedJumpId: Long? = null,
-    focusSelectedJump: Boolean = true,
     onJumpClick: ((Long) -> Unit)? = null,
     showSpeedGradient: Boolean = false,
     focusFastestSegmentKey: Int = 0,
@@ -193,7 +192,6 @@ fun TrailMap(
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                 selectedJumpId = selectedJumpId,
-                focusSelectedJump = focusSelectedJump,
                 showSpeedGradient = showSpeedGradient,
             )
         }
@@ -213,13 +211,12 @@ fun TrailMap(
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                 selectedJumpId = selectedJumpId,
-                focusSelectedJump = focusSelectedJump,
                 showSpeedGradient = showSpeedGradient,
             )
         }
     }
 
-    LaunchedEffect(map, fitRoute, routeFitKey, focusSelectedJump) {
+    LaunchedEffect(map, fitRoute, routeFitKey) {
         if (fitRoute && points.size >= 2) {
             updateMap(
                 map, points, jumps, showRider, fitRoute = true,
@@ -229,14 +226,12 @@ fun TrailMap(
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                 selectedJumpId = selectedJumpId,
-                focusSelectedJump = focusSelectedJump,
                 showSpeedGradient = showSpeedGradient,
             )
         }
     }
 
-    LaunchedEffect(map, selectedJumpId, jumps, points, focusSelectedJump) {
-        if (!focusSelectedJump) return@LaunchedEffect
+    LaunchedEffect(map, selectedJumpId, jumps, points) {
         val selected = jumps.firstOrNull { it.id == selectedJumpId }
         val coordinate = selected?.let { jumpMapCoordinates(it, points).center } ?: return@LaunchedEffect
         val readyMap = map ?: return@LaunchedEffect
@@ -348,7 +343,6 @@ fun TrailMap(
                     boundaryStart = boundaryStart,
                     boundaryEnd = boundaryEnd,
                     selectedJumpId = selectedJumpId,
-                    focusSelectedJump = focusSelectedJump,
                     showSpeedGradient = showSpeedGradient,
                 )
             },
@@ -369,7 +363,6 @@ fun TrailMap(
                         splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                         boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                         selectedJumpId = selectedJumpId,
-                        focusSelectedJump = focusSelectedJump,
                     )
                 },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
@@ -709,7 +702,6 @@ private fun updateMap(
     boundaryStart: TrackPointEntity? = null,
     boundaryEnd: TrackPointEntity? = null,
     selectedJumpId: Long? = null,
-    focusSelectedJump: Boolean = true,
     showSpeedGradient: Boolean = false,
 ) {
     val readyMap = map ?: return
@@ -814,7 +806,7 @@ private fun updateMap(
         style.getSourceAs<GeoJsonSource>(RIDER_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(riderFeatures))
         val selectedJump = jumps.firstOrNull { it.id == selectedJumpId }
         val selectedCoordinate = selectedJump?.let { jumpCoordinates.getValue(it).center }
-        if (fitRoute && focusSelectedJump && selectedCoordinate != null) {
+        if (fitRoute && selectedCoordinate != null) {
             readyMap.cameraPosition = CameraPosition.Builder()
                 .target(LatLng(selectedCoordinate.latitude, selectedCoordinate.longitude))
                 .zoom(maxOf(readyMap.cameraPosition.zoom, JUMP_ZOOM))

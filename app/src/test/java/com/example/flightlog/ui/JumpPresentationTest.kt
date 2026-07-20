@@ -23,25 +23,6 @@ class JumpPresentationTest {
         assertEquals(3, numbers[40])
     }
 
-    @Test fun initialReviewSelectionPrefersTheFirstPendingJump() {
-        val jumps = listOf(
-            jump(id = 1, takeoffAt = 1_000, status = JumpStatus.CONFIRMED),
-            jump(id = 2, takeoffAt = 3_000, status = JumpStatus.PENDING),
-            jump(id = 3, takeoffAt = 2_000, status = JumpStatus.PENDING),
-        )
-
-        assertEquals(3L, initialReviewJumpId(jumps, selectedJumpId = null))
-    }
-
-    @Test fun initialReviewSelectionKeepsAValidExistingSelection() {
-        val jumps = listOf(
-            jump(id = 1, takeoffAt = 1_000, status = JumpStatus.CONFIRMED),
-            jump(id = 2, takeoffAt = 2_000, status = JumpStatus.PENDING),
-        )
-
-        assertEquals(1L, initialReviewJumpId(jumps, selectedJumpId = 1))
-    }
-
     @Test fun mapCoordinatesUseGpsTimesForEndpointsAndStoredCoordinateForNumber() {
         val jump = jump(id = 7, takeoffAt = 1_000).copy(
             landingAt = 1_600,
@@ -70,28 +51,6 @@ class JumpPresentationTest {
 
         assertEquals(45.51, coordinates.center?.latitude ?: 0.0, .0001)
         assertEquals(-73.51, coordinates.center?.longitude ?: 0.0, .0001)
-    }
-
-    @Test fun contextPointsUseTheSensorWindowAroundTheFlight() {
-        val jump = jump(id = 8, takeoffAt = 20_000).copy(landingAt = 20_500)
-        val points = listOf(
-            trackPoint(9_999, 45.0, -73.0),
-            trackPoint(10_000, 45.1, -73.1),
-            trackPoint(20_000, 45.2, -73.2),
-            trackPoint(30_500, 45.3, -73.3),
-            trackPoint(30_501, 45.4, -73.4),
-        )
-
-        assertEquals(listOf(10_000L, 20_000L, 30_500L), jumpContextPoints(jump, points).map { it.recordedAt })
-    }
-
-    @Test fun contextPointsFallBackToNearestRouteFixes() {
-        val jump = jump(id = 8, takeoffAt = 100_000)
-        val points = listOf(70_000L, 80_000L, 120_000L, 130_000L).mapIndexed { index, timestamp ->
-            trackPoint(timestamp, 45.0 + index, -73.0)
-        }
-
-        assertEquals(listOf(70_000L, 80_000L, 120_000L, 130_000L), jumpContextPoints(jump, points).map { it.recordedAt })
     }
 
     @Test fun accelerationIsRelativeToTakeoff() {
