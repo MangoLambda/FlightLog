@@ -51,6 +51,14 @@ class JumpSensorAnalyzerTest {
         assertTrue(analysis.flightKindConfidence >= 60)
     }
 
+    @Test fun dropHeightUsesFullFallTimeInsteadOfSymmetricJumpApex() {
+        val drop = jump(flight = .85)
+        val analysis = JumpSensorAnalyzer.analyze(drop, telemetry { 0.0 }, MountingMode.BIKE_MOUNTED)
+
+        assertEquals(FlightKind.DROP, analysis.estimatedFlightKind)
+        assertEquals(3.54, analysis.airtimeHeightMeters, .02)
+    }
+
     @Test fun missingOrientationIsUncertain() {
         val telemetry = telemetry { 0.0 }.copy(orientation = emptyList(), orientationSource = OrientationSource.NONE)
         val analysis = JumpSensorAnalyzer.analyze(jump(), telemetry, MountingMode.BIKE_MOUNTED)
@@ -71,13 +79,12 @@ class JumpSensorAnalyzerTest {
         )
     }
 
-    private fun jump(): JumpEventEntity {
-        val flight = .6
+    private fun jump(flight: Double = .6): JumpEventEntity {
         return JumpEventEntity(
             id = 1,
             rideId = 1,
             takeoffAt = 1_000,
-            landingAt = 1_600,
+            landingAt = 1_000 + (flight * 1_000).toLong(),
             estimatedFlightSeconds = flight,
             estimatedHeightMeters = 9.80665 * flight.pow(2) / 8.0,
             estimatedDistanceMeters = 3.0,

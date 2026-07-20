@@ -30,7 +30,7 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 object TrailAnalysis {
-    const val ANALYSIS_VERSION = 5
+    const val ANALYSIS_VERSION = 6
     const val EFFORT_VERSION = 4
     const val BIN_METERS = 5.0
     private const val MAX_GPS_ACCURACY_METERS = 25f

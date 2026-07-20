@@ -67,4 +67,17 @@ class RideMathTest {
         assertTrue(instant in bounds)
         assertEquals(java.time.LocalDate.of(2026, 1, 1), java.time.Instant.ofEpochMilli(bounds.first).atZone(ZoneId.of("America/Montreal")).toLocalDate())
     }
+
+    @Test fun correctingFlightTypeAlsoChangesItsDisplayedHeightModel() {
+        val flight = .85
+        val event = JumpEventEntity(
+            rideId = 1, takeoffAt = 1_000, landingAt = 1_850,
+            estimatedFlightSeconds = flight, estimatedHeightMeters = 9.80665 * flight * flight / 8.0,
+            estimatedDistanceMeters = 3.0, confidence = 80, sensorQuality = SensorQuality.FULL,
+            estimatedFlightKind = FlightKind.JUMP, correctedFlightKind = FlightKind.DROP,
+        )
+
+        assertEquals(3.54, event.displayHeightMeters, .02)
+        assertEquals(.89, event.copy(correctedFlightKind = null).displayHeightMeters, .02)
+    }
 }

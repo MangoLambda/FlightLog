@@ -41,10 +41,32 @@ class TelemetryCodecTest {
         assertEquals(TelemetryCodec.MOTION_ENCODING_VERSION, encoded.encodingVersion)
         assertEquals(telemetry.sampleCount, decoded.sampleCount)
         assertEquals(telemetry.endedAt, decoded.endedAt)
-        assertEquals(telemetry.accelerometer[10].x, decoded.accelerometer[10].x, .001f)
+        assertEquals(telemetry.accelerometer[10].x, decoded.accelerometer[10].x, .01f)
         assertEquals(OrientationSource.GAME_ROTATION_VECTOR, decoded.orientationSource)
         val corrupt = encoded.payload.clone().also { it[it.lastIndex] = (it.last() + 1).toByte() }
         assertThrows(IllegalArgumentException::class.java) { TelemetryCodec.decodeMotion(corrupt, encoded.checksum) }
+    }
+
+    @Test fun currentMotionEncodingStoresIeeeHalfPrecisionValues() {
+        assertEquals(0x3c00, TelemetryCodec.floatToHalfBits(1f))
+        assertEquals(0xc000, TelemetryCodec.floatToHalfBits(-2f))
+        assertEquals(9.8046875f, TelemetryCodec.halfBitsToFloat(TelemetryCodec.floatToHalfBits(9.80665f)), 0f)
+    }
+
+    @Test fun versionThreeFixedPointMotionStillDecodes() {
+        val telemetry = MotionTelemetry(
+            orientationSource = OrientationSource.GAME_ROTATION_VECTOR,
+            accelerometer = listOf(Vector3Sample(1_000, 1.234f, -2.345f, 9.807f)),
+            gyroscope = listOf(Vector3Sample(1_000, .123f, .234f, .345f)),
+            orientation = listOf(RotationSample(1_000, 0f, 0f, 0f, 1f)),
+        )
+        val decoded = TelemetryCodec.encodeLegacyFixedPointMotion(telemetry).let {
+            TelemetryCodec.decodeMotion(it.payload, it.checksum)
+        }
+
+        assertEquals(TelemetryCodec.LEGACY_FIXED_POINT_MOTION_ENCODING_VERSION, decoded.encodingVersion)
+        assertEquals(1.234f, decoded.accelerometer.single().x, .001f)
+        assertEquals(1f, decoded.orientation.single().w, .000001f)
     }
 
     @Test fun legacyMotionDecodesIntoSeparateAccelerationAndGyroscopeChannels() {

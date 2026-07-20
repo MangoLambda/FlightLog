@@ -63,8 +63,6 @@ object JumpSensorAnalyzer {
         }
         val orientationCoverage = if (acceleration.isEmpty()) 0.0 else oriented.size.toDouble() / acceleration.size
         val maximumRotation = if (orientationCoverage >= 0.8) maximumRotationDegrees(jump, orientation) else null
-        val airtimeHeight = (STANDARD_GRAVITY * jump.estimatedFlightSeconds.coerceIn(0.0, 2.5).pow(2) / 8.0)
-            .coerceIn(0.0, 8.0)
         val confidence = confidence(
             jump = jump,
             mountingMode = mountingMode,
@@ -83,6 +81,7 @@ object JumpSensorAnalyzer {
             oriented = oriented,
             maximumRotationDegrees = maximumRotation,
         )
+        val airtimeHeight = estimatedHeight(jump.estimatedFlightSeconds, classification)
         return JumpSensorAnalysis(
             accelerometerRate = accelerationRate,
             gyroscopeRate = gyroscopeRate,
@@ -98,6 +97,16 @@ object JumpSensorAnalyzer {
             upwardLaunchPeakMps2 = classification.peak,
             worldVerticalAcceleration = oriented,
         )
+    }
+
+    private fun estimatedHeight(flightSeconds: Double, classification: FlightClassification): Double {
+        val time = flightSeconds.coerceIn(0.0, 2.5)
+        return when (classification.kind) {
+            FlightKind.DROP -> (STANDARD_GRAVITY * time.pow(2) / 2.0 -
+                (classification.impulse ?: 0.0).coerceAtLeast(0.0) * time).coerceIn(0.0, 40.0)
+            FlightKind.JUMP, FlightKind.UNCERTAIN ->
+                (STANDARD_GRAVITY * time.pow(2) / 8.0).coerceIn(0.0, 8.0)
+        }
     }
 
     private data class FlightClassification(

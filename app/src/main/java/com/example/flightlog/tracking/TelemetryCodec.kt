@@ -123,7 +123,8 @@ object TelemetryCodec {
     const val LEGACY_MOTION_ENCODING_VERSION = 1
     /** Version 2 included a fourth sensor channel that is no longer retained. */
     const val LEGACY_MULTICHANNEL_MOTION_ENCODING_VERSION = 2
-    const val MOTION_ENCODING_VERSION = 3
+    const val LEGACY_FIXED_POINT_MOTION_ENCODING_VERSION = 3
+    const val MOTION_ENCODING_VERSION = 4
     private const val GPS_MAGIC = 0x464C4750 // FLGP
     private const val MOTION_MAGIC = 0x464C4D4F // FLMO
     private const val MAX_DECOMPRESSED_BYTES = 128 * 1024 * 1024
@@ -198,9 +199,9 @@ object TelemetryCodec {
                 output.writeInt(MOTION_MAGIC)
                 output.writeByte(MOTION_ENCODING_VERSION)
                 output.writeByte(telemetry.orientationSource.ordinal)
-                writeVectorChannel(output, accelerometer)
-                writeVectorChannel(output, gyroscope)
-                writeRotationChannel(output, orientation)
+                writeHalfVectorChannel(output, accelerometer)
+                writeHalfVectorChannel(output, gyroscope)
+                writeHalfRotationChannel(output, orientation)
             }
         }.toByteArray()
         val startedAt = listOfNotNull(
@@ -220,6 +221,30 @@ object TelemetryCodec {
             startedAt = startedAt,
             endedAt = endedAt,
         )
+    }
+
+    /** Test/import compatibility encoder for version 3 fixed-point multichannel telemetry. */
+    internal fun encodeLegacyFixedPointMotion(telemetry: MotionTelemetry): EncodedTelemetry {
+        val accelerometer = telemetry.accelerometer.sortedBy { it.timestampMillis }
+        val gyroscope = telemetry.gyroscope.sortedBy { it.timestampMillis }
+        val orientation = telemetry.orientation.sortedBy { it.timestampMillis }
+        val count = accelerometer.size + gyroscope.size + orientation.size
+        require(count in 1..MAX_SAMPLES)
+        val raw = ByteArrayOutputStream().also { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(MOTION_MAGIC)
+                output.writeByte(LEGACY_FIXED_POINT_MOTION_ENCODING_VERSION)
+                output.writeByte(telemetry.orientationSource.ordinal)
+                writeVectorChannel(output, accelerometer)
+                writeVectorChannel(output, gyroscope)
+                writeRotationChannel(output, orientation)
+            }
+        }.toByteArray()
+        return encoded(raw, LEGACY_FIXED_POINT_MOTION_ENCODING_VERSION, count,
+            listOfNotNull(accelerometer.firstOrNull()?.timestampMillis, gyroscope.firstOrNull()?.timestampMillis,
+                orientation.firstOrNull()?.timestampMillis).minOrNull() ?: error("Motion telemetry is empty"),
+            listOfNotNull(accelerometer.lastOrNull()?.timestampMillis, gyroscope.lastOrNull()?.timestampMillis,
+                orientation.lastOrNull()?.timestampMillis).maxOrNull() ?: error("Motion telemetry is empty"))
     }
 
     /** Test/import compatibility encoder for the original acceleration-paced format. */
@@ -252,7 +277,8 @@ object TelemetryCodec {
             when (val version = input.readUnsignedByte()) {
                 LEGACY_MOTION_ENCODING_VERSION -> decodeLegacyMotion(input)
                 LEGACY_MULTICHANNEL_MOTION_ENCODING_VERSION -> decodeLegacyMultichannelMotion(input)
-                MOTION_ENCODING_VERSION -> decodeMotionV3(input)
+                LEGACY_FIXED_POINT_MOTION_ENCODING_VERSION -> decodeMotionV3(input)
+                MOTION_ENCODING_VERSION -> decodeMotionV4(input)
                 else -> error("Unsupported motion telemetry version $version")
             }.also { require(input.read() == -1) { "Trailing motion telemetry data" } }
         }
@@ -306,7 +332,7 @@ object TelemetryCodec {
         val gyroscope = readVectorChannel(input, 100f, MAX_SAMPLES - accelerometer.size)
         val orientation = readRotationChannel(input, MAX_SAMPLES - accelerometer.size - gyroscope.size)
         val telemetry = MotionTelemetry(
-            encodingVersion = MOTION_ENCODING_VERSION,
+            encodingVersion = LEGACY_FIXED_POINT_MOTION_ENCODING_VERSION,
             orientationSource = OrientationSource.entries[sourceOrdinal],
             accelerometer = accelerometer,
             gyroscope = gyroscope,
@@ -314,6 +340,67 @@ object TelemetryCodec {
         )
         require(telemetry.sampleCount in 1..MAX_SAMPLES) { "Invalid telemetry sample count" }
         return telemetry
+    }
+
+    private fun decodeMotionV4(input: DataInputStream): MotionTelemetry {
+        val sourceOrdinal = input.readUnsignedByte()
+        require(sourceOrdinal in OrientationSource.entries.indices) { "Invalid orientation source" }
+        val accelerometer = readHalfVectorChannel(input, 1_000f, MAX_SAMPLES)
+        val gyroscope = readHalfVectorChannel(input, 100f, MAX_SAMPLES - accelerometer.size)
+        val orientation = readHalfRotationChannel(input, MAX_SAMPLES - accelerometer.size - gyroscope.size)
+        return MotionTelemetry(
+            encodingVersion = MOTION_ENCODING_VERSION,
+            orientationSource = OrientationSource.entries[sourceOrdinal],
+            accelerometer = accelerometer,
+            gyroscope = gyroscope,
+            orientation = orientation,
+        ).also { require(it.sampleCount in 1..MAX_SAMPLES) { "Invalid telemetry sample count" } }
+    }
+
+    private fun writeHalfVectorChannel(output: DataOutputStream, samples: List<Vector3Sample>) {
+        writeUnsigned(output, samples.size.toLong())
+        var time = 0L
+        samples.forEach { sample ->
+            require(sample.x.isFinite() && sample.y.isFinite() && sample.z.isFinite())
+            writeSigned(output, sample.timestampMillis - time)
+            listOf(sample.x, sample.y, sample.z).forEach { output.writeShort(floatToHalfBits(it)) }
+            time = sample.timestampMillis
+        }
+    }
+
+    private fun readHalfVectorChannel(input: DataInputStream, maximumMagnitude: Float, maximumCount: Int): List<Vector3Sample> {
+        val count = readOptionalCount(input, maximumCount)
+        var time = 0L
+        return List(count) {
+            time = nextTimestamp(input, time)
+            val values = FloatArray(3) { halfBitsToFloat(input.readUnsignedShort()) }
+            require(values.all { it.isFinite() && it in -maximumMagnitude..maximumMagnitude }) { "Invalid motion vector" }
+            Vector3Sample(time, values[0], values[1], values[2])
+        }
+    }
+
+    private fun writeHalfRotationChannel(output: DataOutputStream, samples: List<RotationSample>) {
+        writeUnsigned(output, samples.size.toLong())
+        var time = 0L
+        samples.forEach { sample ->
+            require(listOf(sample.x, sample.y, sample.z, sample.w).all(Float::isFinite))
+            writeSigned(output, sample.timestampMillis - time)
+            listOf(sample.x, sample.y, sample.z, sample.w).forEach { output.writeShort(floatToHalfBits(it)) }
+            time = sample.timestampMillis
+        }
+    }
+
+    private fun readHalfRotationChannel(input: DataInputStream, maximumCount: Int): List<RotationSample> {
+        val count = readOptionalCount(input, maximumCount)
+        var time = 0L
+        return List(count) {
+            time = nextTimestamp(input, time)
+            val values = FloatArray(4) { halfBitsToFloat(input.readUnsignedShort()) }
+            require(values.all { it.isFinite() && it in -1.1f..1.1f }) { "Invalid rotation vector" }
+            val norm = sqrt(values.sumOf { value -> value.toDouble() * value })
+            require(norm in 0.5..1.5) { "Invalid rotation quaternion" }
+            RotationSample(time, values[0], values[1], values[2], values[3])
+        }
     }
 
     private fun writeVectorChannel(output: DataOutputStream, samples: List<Vector3Sample>) {
@@ -453,5 +540,44 @@ object TelemetryCodec {
     private fun readSigned(input: DataInputStream): Long {
         val encoded = readUnsigned(input)
         return (encoded ushr 1) xor -(encoded and 1)
+    }
+
+    internal fun floatToHalfBits(value: Float): Int {
+        val bits = value.toRawBits()
+        val sign = (bits ushr 16) and 0x8000
+        val rounded = (bits and 0x7fffffff) + 0x1000
+        if (rounded >= 0x47800000) {
+            if ((bits and 0x7fffffff) >= 0x47800000) {
+                if (rounded < 0x7f800000) return sign or 0x7c00
+                return sign or 0x7c00 or ((bits and 0x007fffff) ushr 13)
+            }
+            return sign or 0x7bff
+        }
+        if (rounded >= 0x38800000) return sign or ((rounded - 0x38000000) ushr 13)
+        if (rounded < 0x33000000) return sign
+        val exponent = (bits and 0x7fffffff) ushr 23
+        return sign or ((((bits and 0x7fffff) or 0x800000) + (0x800000 ushr (exponent - 102))) ushr (126 - exponent))
+    }
+
+    internal fun halfBitsToFloat(bits: Int): Float {
+        val sign = (bits and 0x8000) shl 16
+        var exponent = (bits ushr 10) and 0x1f
+        var fraction = bits and 0x03ff
+        val floatBits = when {
+            exponent == 0 && fraction == 0 -> sign
+            exponent == 0 -> {
+                var shift = 0
+                while (fraction and 0x0400 == 0) {
+                    fraction = fraction shl 1
+                    shift++
+                }
+                fraction = fraction and 0x03ff
+                exponent = 127 - 15 - shift
+                sign or (exponent shl 23) or (fraction shl 13)
+            }
+            exponent == 0x1f -> sign or 0x7f800000 or (fraction shl 13)
+            else -> sign or ((exponent + 127 - 15) shl 23) or (fraction shl 13)
+        }
+        return Float.fromBits(floatBits)
     }
 }

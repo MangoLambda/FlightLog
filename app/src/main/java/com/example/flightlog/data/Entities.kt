@@ -87,9 +87,13 @@ data class JumpEventEntity(
     val longitude: Double? = null,
 ) {
     val displayFlightSeconds get() = correctedFlightSeconds ?: estimatedFlightSeconds
-    val displayHeightMeters get() = correctedHeightMeters ?: estimatedHeightMeters
     val displayDistanceMeters get() = correctedDistanceMeters ?: estimatedDistanceMeters
     val displayFlightKind get() = correctedFlightKind ?: estimatedFlightKind
+    val displayHeightMeters get() = correctedHeightMeters ?: when {
+        correctedFlightKind == null || correctedFlightKind == estimatedFlightKind -> estimatedHeightMeters
+        displayFlightKind == FlightKind.DROP -> 9.80665 * displayFlightSeconds * displayFlightSeconds / 2.0
+        else -> 9.80665 * displayFlightSeconds * displayFlightSeconds / 8.0
+    }
 }
 
 @Entity(
