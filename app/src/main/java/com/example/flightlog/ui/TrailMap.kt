@@ -154,6 +154,8 @@ fun TrailMap(
     onBoundaryStartChange: ((TrackPointEntity) -> Unit)? = null,
     onBoundaryEndChange: ((TrackPointEntity) -> Unit)? = null,
     selectedJumpId: Long? = null,
+    jumpLabels: Map<Long, String> = emptyMap(),
+    jumpMarkerColors: Map<Long, String> = emptyMap(),
     onJumpClick: ((Long) -> Unit)? = null,
     showSpeedGradient: Boolean = false,
     focusFastestSegmentKey: Int = 0,
@@ -192,6 +194,7 @@ fun TrailMap(
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                 selectedJumpId = selectedJumpId,
+                jumpLabels = jumpLabels, jumpMarkerColors = jumpMarkerColors,
                 showSpeedGradient = showSpeedGradient,
             )
         }
@@ -211,6 +214,7 @@ fun TrailMap(
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                 selectedJumpId = selectedJumpId,
+                jumpLabels = jumpLabels, jumpMarkerColors = jumpMarkerColors,
                 showSpeedGradient = showSpeedGradient,
             )
         }
@@ -226,6 +230,7 @@ fun TrailMap(
                 splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                 boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                 selectedJumpId = selectedJumpId,
+                jumpLabels = jumpLabels, jumpMarkerColors = jumpMarkerColors,
                 showSpeedGradient = showSpeedGradient,
             )
         }
@@ -343,6 +348,7 @@ fun TrailMap(
                     boundaryStart = boundaryStart,
                     boundaryEnd = boundaryEnd,
                     selectedJumpId = selectedJumpId,
+                    jumpLabels = jumpLabels, jumpMarkerColors = jumpMarkerColors,
                     showSpeedGradient = showSpeedGradient,
                 )
             },
@@ -363,6 +369,7 @@ fun TrailMap(
                         splitRoutes = splitRoutes, pauseZoneRoutes = pauseZoneRoutes, selectedSplitIndex = selectedSplitIndex,
                         boundaryStart = boundaryStart, boundaryEnd = boundaryEnd,
                         selectedJumpId = selectedJumpId,
+                        jumpLabels = jumpLabels, jumpMarkerColors = jumpMarkerColors,
                     )
                 },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
@@ -647,7 +654,7 @@ private fun addRideLayers(style: Style, context: Context) {
         circleColor("#42D9E8"), circleRadius(14f),
     ).withFilter(Expression.eq(Expression.get("selected"), Expression.literal(true))))
     style.addLayer(CircleLayer(JUMP_CIRCLE_LAYER, JUMP_SOURCE).withProperties(
-        circleColor("#132019"), circleRadius(11f),
+        circleColor(Expression.get("color")), circleRadius(11f),
     ))
     style.addLayer(SymbolLayer(JUMP_LABEL_LAYER, JUMP_SOURCE).withProperties(
         textField(Expression.get("label")), textSize(12f), textColor("#FFFFFF"),
@@ -702,6 +709,8 @@ private fun updateMap(
     boundaryStart: TrackPointEntity? = null,
     boundaryEnd: TrackPointEntity? = null,
     selectedJumpId: Long? = null,
+    jumpLabels: Map<Long, String> = emptyMap(),
+    jumpMarkerColors: Map<Long, String> = emptyMap(),
     showSpeedGradient: Boolean = false,
 ) {
     val readyMap = map ?: return
@@ -744,7 +753,8 @@ private fun updateMap(
                     FlightKind.DROP -> "D"
                     FlightKind.UNCERTAIN -> "?"
                 }
-                addStringProperty("label", "$prefix${numbers[jump.id] ?: ""}")
+                addStringProperty("label", jumpLabels[jump.id] ?: "$prefix${numbers[jump.id] ?: ""}")
+                addStringProperty("color", jumpMarkerColors[jump.id] ?: "#132019")
                 addBooleanProperty("selected", jump.id == selectedJumpId)
             }
         }
@@ -775,7 +785,7 @@ private fun updateMap(
             Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude))
         }
         style.getSourceAs<GeoJsonSource>(STOP_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(stopFeatures))
-        val splitColors = listOf("#42D9E8", "#A7E34B", "#FFB84D", "#9C8CFF", "#54B6FF")
+        val splitColors = listOf("#42D9E8", "#A7E34B", "#9C8CFF", "#54B6FF", "#34C59A", "#5E8CFF")
         val splitFeatures = splitRoutes.mapIndexedNotNull { index, route ->
             if (route.size < 2) return@mapIndexedNotNull null
             Feature.fromGeometry(LineString.fromLngLats(route.map { Point.fromLngLat(it.longitude, it.latitude) })).apply {

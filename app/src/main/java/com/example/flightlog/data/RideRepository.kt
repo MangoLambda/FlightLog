@@ -49,6 +49,40 @@ class RideRepository(private val database: FlightLogDatabase) {
             JumpMotionTrace.merge(jump, listOfNotNull(persisted, raw))
         }
         .catch { emit(MotionTelemetry.EMPTY) }
+
+    suspend fun featureReviewEvidence(observationId: Long): FeatureReviewEvidence? {
+        val observations = dao.allFeatureObservations()
+        val candidateObservation = observations.firstOrNull {
+            it.id == observationId && it.assignmentState == FeatureAssignmentState.REVIEW
+        } ?: return null
+        val featureId = candidateObservation.featureId ?: return null
+        val feature = dao.allPhysicalFeatures().firstOrNull { it.id == featureId } ?: return null
+        val rides = dao.allRides().associateBy { it.id }
+        val jumps = rides.values.flatMap { dao.jumps(it.id) }.associateBy { it.id }
+
+        suspend fun evidence(observation: FeatureObservationEntity): FeatureRunEvidence? {
+            val jump = jumps[observation.jumpId] ?: return null
+            val ride = rides[jump.rideId] ?: return null
+            val route = featureRunRoutePoints(jump, compactedPoints(ride.id))
+            val motion = runCatching {
+                val persisted = dao.jumpMotionTrace(jump.id)?.let(JumpMotionTrace::decode)
+                val raw = runCatching { JumpMotionTrace.loadRaw(dao, jump) }.getOrNull()
+                JumpMotionTrace.merge(jump, listOfNotNull(persisted, raw))
+            }.getOrDefault(MotionTelemetry.EMPTY)
+            return FeatureRunEvidence(observation, jump, ride, route, motion, motion.hasUsableSamples)
+        }
+
+        val candidate = evidence(candidateObservation) ?: return null
+        val referenceObservations = observations.asSequence()
+            .filter { it.featureId == featureId && it.assignmentState == FeatureAssignmentState.MATCHED }
+            .sortedWith(compareByDescending<FeatureObservationEntity> { it.createdAt }.thenByDescending { it.id })
+            .toList()
+        val references = buildList {
+            for (observation in referenceObservations) evidence(observation)?.let(::add)
+        }
+        return FeatureReviewEvidence(candidateObservation, feature, candidate, references)
+    }
+
     fun stops(rideId: Long) = dao.observeStopEventsForRide(rideId)
     suspend fun setJumpStatus(id: Long, status: JumpStatus) {
         dao.setJumpStatus(id, status)

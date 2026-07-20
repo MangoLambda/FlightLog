@@ -19,6 +19,7 @@ import com.example.flightlog.data.TrailDefinitionDraft
 import com.example.flightlog.data.TrailEditImpact
 import com.example.flightlog.data.BulkRideDeletePreview
 import com.example.flightlog.data.BulkRideDeleteResult
+import com.example.flightlog.data.FeatureReviewEvidenceState
 import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.maps.MapApiKeyStore
@@ -37,6 +38,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -75,6 +78,7 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     val selectedJumpId = MutableStateFlow<Long?>(null)
     val selectedTrailId = MutableStateFlow<Long?>(null)
     val selectedFeatureId = MutableStateFlow<Long?>(null)
+    val selectedReviewObservationId = MutableStateFlow<Long?>(null)
     val selectedPassAId = MutableStateFlow<Long?>(null)
     val selectedPassBId = MutableStateFlow<Long?>(null)
     val backupState = MutableStateFlow<BackupUiState>(BackupUiState.Idle)
@@ -116,6 +120,20 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     }.flatMapLatest { jump ->
         if (jump == null) flowOf(MotionTelemetry.EMPTY) else repository.jumpMotion(jump)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MotionTelemetry.EMPTY)
+
+    val featureReviewEvidence = selectedReviewObservationId.flatMapLatest { observationId ->
+        if (observationId == null) flowOf(FeatureReviewEvidenceState.None)
+        else flow {
+            emit(FeatureReviewEvidenceState.Loading)
+            val evidence = repository.featureReviewEvidence(observationId)
+            emit(
+                evidence?.let(FeatureReviewEvidenceState::Available)
+                    ?: FeatureReviewEvidenceState.Unavailable(observationId, "Comparison evidence is no longer available."),
+            )
+        }.catch {
+            emit(FeatureReviewEvidenceState.Unavailable(observationId, "Comparison evidence could not be loaded."))
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FeatureReviewEvidenceState.None)
 
     val selectedRidePeakGForces = selectedRideJumps.flatMapLatest { rideJumps ->
         if (rideJumps.isEmpty()) flowOf(emptyMap())
@@ -189,6 +207,7 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun openFeature(featureId: Long) { selectedFeatureId.value = featureId; screen.value = AppScreen.FEATURE_DETAIL }
+    fun selectFeatureReview(observationId: Long?) { selectedReviewObservationId.value = observationId }
     fun renameFeature(featureId: Long, name: String) = viewModelScope.launch { repository.renameFeature(featureId, name) }
     fun assignFeatureObservation(observationId: Long, featureId: Long?) = viewModelScope.launch { repository.assignObservation(observationId, featureId) }
     fun mergeFeatures(retainedId: Long, duplicateId: Long) = viewModelScope.launch { repository.mergeFeatures(retainedId, duplicateId) }

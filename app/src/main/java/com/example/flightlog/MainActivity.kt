@@ -77,6 +77,9 @@ import com.example.flightlog.data.BulkRideDeletePreview
 import com.example.flightlog.data.BulkRideDeleteResult
 import com.example.flightlog.data.PhysicalFeatureEntity
 import com.example.flightlog.data.FeatureObservationEntity
+import com.example.flightlog.data.FeatureRunEvidence
+import com.example.flightlog.data.FeatureReviewEvidence
+import com.example.flightlog.data.FeatureReviewEvidenceState
 import com.example.flightlog.domain.AggregatePeriod
 import com.example.flightlog.domain.EffortInvalidReason
 import com.example.flightlog.domain.JumpStatus
@@ -123,6 +126,10 @@ import com.example.flightlog.ui.prePumpSpeedMetersPerSecond
 import com.example.flightlog.ui.pumpAccelerationPoint
 import com.example.flightlog.ui.flightGpsSpeedSamples
 import com.example.flightlog.ui.GpsSpeedPoint
+import com.example.flightlog.ui.reconcileFeatureReferenceSelection
+import com.example.flightlog.ui.takeoffDistanceMeters
+import com.example.flightlog.ui.bearingDifferenceDegrees
+import com.example.flightlog.ui.MAX_VISIBLE_FEATURE_REFERENCES
 import com.example.flightlog.maps.MapStyle
 import com.example.flightlog.update.UpdateUiState
 import com.example.flightlog.ui.theme.Amber
@@ -153,6 +160,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val jumps by vm.jumps.collectAsStateWithLifecycle()
     val physicalFeatures by vm.physicalFeatures.collectAsStateWithLifecycle()
     val featureObservations by vm.featureObservations.collectAsStateWithLifecycle()
+    val featureReviewEvidence by vm.featureReviewEvidence.collectAsStateWithLifecycle()
     val trails by vm.trails.collectAsStateWithLifecycle()
     val sections by vm.sections.collectAsStateWithLifecycle()
     val passes by vm.passes.collectAsStateWithLifecycle()
@@ -378,8 +386,11 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onDelete = vm::deleteRides,
                     )
                     AppScreen.TRAILS -> TrailsScreen(trails, sections, passes, efforts, imperial, vm::openTrail)
-                    AppScreen.FEATURES -> FeaturesScreen(physicalFeatures, featureObservations, rides, jumps, imperial,
-                        effectiveMapApiKey, mapStyle, vm::openFeature, vm::assignFeatureObservation, openMapSettings)
+                    AppScreen.FEATURES -> FeaturesScreen(
+                        physicalFeatures, featureObservations, rides, jumps, imperial,
+                        effectiveMapApiKey, mapStyle, featureReviewEvidence,
+                        vm::openFeature, vm::selectFeatureReview, vm::assignFeatureObservation, openMapSettings,
+                    )
                     AppScreen.SETTINGS -> SettingsScreen(
                         imperial = imperial,
                         recordingSettings = recordingSettings,
@@ -1946,10 +1957,20 @@ internal fun invalidEffortMessage(efforts: List<SectionEffortEntity>): String {
 private fun FeaturesScreen(
     features: List<PhysicalFeatureEntity>, observations: List<FeatureObservationEntity>,
     rides: List<RideEntity>, jumps: List<JumpEventEntity>, imperial: Boolean,
-    mapApiKey: String, mapStyle: MapStyle, onOpen: (Long) -> Unit, onAssign: (Long, Long?) -> Unit,
+    mapApiKey: String, mapStyle: MapStyle, evidenceState: FeatureReviewEvidenceState,
+    onOpen: (Long) -> Unit, onSelectReview: (Long?) -> Unit, onAssign: (Long, Long?) -> Unit,
     onConfigureMap: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    val review = observations.filter { it.assignmentState == FeatureAssignmentState.REVIEW }
+    val selectedReviewId = when (evidenceState) {
+        is FeatureReviewEvidenceState.Available -> evidenceState.evidence.reviewObservation.id
+        is FeatureReviewEvidenceState.Unavailable -> evidenceState.observationId
+        else -> null
+    }
+    LaunchedEffect(review.map { it.id }, selectedReviewId) {
+        if (selectedReviewId !in review.map { it.id }) onSelectReview(review.firstOrNull()?.id)
+    }
     Column(Modifier.fillMaxSize()) {
         Text("Physical features", Modifier.padding(20.dp, 20.dp, 20.dp, 8.dp), style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
         PrimaryTabRow(selectedTabIndex = tab) {
@@ -1957,7 +1978,6 @@ private fun FeaturesScreen(
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Stats") })
         }
         if (tab == 1) { StatsScreen(rides, jumps, imperial); return@Column }
-        val review = observations.filter { it.assignmentState == FeatureAssignmentState.REVIEW }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (features.isNotEmpty()) item {
                 Card(Modifier.fillMaxWidth().height(220.dp)) {
@@ -1978,14 +1998,24 @@ private fun FeaturesScreen(
                 item { Text("Needs review (${review.size})", style = MaterialTheme.typography.titleLarge, color = Amber, fontWeight = FontWeight.Bold) }
                 items(review, key = { "review:${it.id}" }) { observation ->
                     val proposal = features.firstOrNull { it.id == observation.featureId }
-                    Card { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Is this ${proposal?.name ?: "an existing feature"}?", fontWeight = FontWeight.Bold)
-                        Text("${observation.matchConfidence}% match • ${formatCoordinate(observation.latitude)}, ${formatCoordinate(observation.longitude)}")
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { proposal?.id?.let { onAssign(observation.id, it) } }, enabled = proposal != null) { Text("Accept") }
-                            OutlinedButton(onClick = { onAssign(observation.id, null) }) { Text("New feature") }
+                    val expanded = observation.id == selectedReviewId || (selectedReviewId == null && observation == review.first())
+                    Card(Modifier.fillMaxWidth().clickable { onSelectReview(observation.id) }) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(proposal?.name ?: "Feature unavailable", fontWeight = FontWeight.Bold)
+                            Text(
+                                "${observation.matchConfidence}% match • ${formatDate(observation.createdAt)} • " +
+                                    "${formatFeatureSpeed(observation.takeoffSpeedMps, imperial)} • " +
+                                    String.format(Locale.US, "%.2fs", observation.airtimeSeconds),
+                            )
+                            if (expanded) when (val state = evidenceState) {
+                                FeatureReviewEvidenceState.Loading, FeatureReviewEvidenceState.None -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                                is FeatureReviewEvidenceState.Unavailable -> FeatureEvidenceUnavailable(state.message, observation, proposal, onAssign)
+                                is FeatureReviewEvidenceState.Available -> FeatureReviewWorkspace(
+                                    state.evidence, imperial, mapApiKey, mapStyle, onConfigureMap, onAssign,
+                                )
+                            }
                         }
-                    } }
+                    }
                 }
             }
             item { Text("Your jumps and drops", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
@@ -2008,6 +2038,211 @@ private fun FeaturesScreen(
         }
     }
 }
+
+@Composable
+private fun FeatureEvidenceUnavailable(
+    message: String,
+    observation: FeatureObservationEntity,
+    proposal: PhysicalFeatureEntity?,
+    onAssign: (Long, Long?) -> Unit,
+) {
+    Text(message, color = MaterialTheme.colorScheme.error)
+    Text("The observation can still be assigned.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    FeatureDecisionButtons(observation, proposal, onAssign)
+}
+
+@Composable
+private fun FeatureReviewWorkspace(
+    evidence: FeatureReviewEvidence,
+    imperial: Boolean,
+    mapApiKey: String,
+    mapStyle: MapStyle,
+    onConfigureMap: () -> Unit,
+    onAssign: (Long, Long?) -> Unit,
+) {
+    var selectedReferenceIds by rememberSaveable(evidence.reviewObservation.id) { mutableStateOf(emptyList<Long>()) }
+    LaunchedEffect(evidence.references.map { it.observation.id }) {
+        selectedReferenceIds = reconcileFeatureReferenceSelection(evidence.references, selectedReferenceIds.toSet()).toList()
+    }
+    val selectedReferences = evidence.references.filter { it.observation.id in selectedReferenceIds }
+    val visibleRuns = listOf(evidence.candidate) + selectedReferences
+    val colors = featureRunColors()
+
+    Text("Is this ${evidence.proposedFeature.name}?", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    Text("New observation", color = Amber, fontWeight = FontWeight.Bold)
+    if (evidence.references.isEmpty()) {
+        Text("No prior matched run is available. Compare the location and measurements before assigning.")
+    } else {
+        Text("Reference runs", style = MaterialTheme.typography.labelLarge)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(evidence.references, key = { it.observation.id }) { run ->
+                val selected = run.observation.id in selectedReferenceIds
+                FilterChip(
+                    selected = selected,
+                    onClick = {
+                        selectedReferenceIds = if (selected) selectedReferenceIds - run.observation.id
+                        else if (selectedReferenceIds.size < MAX_VISIBLE_FEATURE_REFERENCES) selectedReferenceIds + run.observation.id
+                        else selectedReferenceIds
+                    },
+                    label = { Text(formatDate(run.observation.createdAt)) },
+                )
+            }
+        }
+    }
+
+    val allPoints = visibleRuns.flatMap { it.routePoints }
+    Surface(Modifier.fillMaxWidth().height(280.dp), shape = RoundedCornerShape(16.dp)) {
+        if (allPoints.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Route points unavailable; coordinate markers remain in the comparison table.")
+            }
+        } else {
+            TrailMap(
+                points = allPoints,
+                jumps = visibleRuns.map { it.jump },
+                apiKey = mapApiKey,
+                mapStyle = mapStyle,
+                modifier = Modifier.fillMaxSize(),
+                onConfigureMap = onConfigureMap,
+                fitRoute = true,
+                comparisonPoints = evidence.candidate.routePoints,
+                highlightedPoints = allPoints.takeIf { it.size >= 2 }.orEmpty(),
+                splitRoutes = selectedReferences.map { it.routePoints },
+                jumpLabels = visibleRuns.mapIndexed { index, run -> run.jump.id to if (index == 0) "New" else "Run $index" }.toMap(),
+                jumpMarkerColors = visibleRuns.mapIndexed { index, run -> run.jump.id to featureRunColorHex(index) }.toMap(),
+            )
+        }
+    }
+    Text("Amber dashed route: New • colored routes: selected prior runs • green/orange: takeoff/landing", style = MaterialTheme.typography.labelMedium)
+    FeatureComparisonTable(evidence.candidate, visibleRuns, colors, imperial)
+    FeatureAccelerationComparison(visibleRuns, colors)
+    FeatureDecisionButtons(evidence.reviewObservation, evidence.proposedFeature, onAssign)
+}
+
+@Composable
+private fun FeatureDecisionButtons(
+    observation: FeatureObservationEntity,
+    proposal: PhysicalFeatureEntity?,
+    onAssign: (Long, Long?) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = { proposal?.id?.let { onAssign(observation.id, it) } },
+            enabled = proposal != null,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Accept as ${proposal?.name ?: "feature"}") }
+        OutlinedButton(onClick = { onAssign(observation.id, null) }, modifier = Modifier.fillMaxWidth()) {
+            Text("New feature")
+        }
+    }
+}
+
+@Composable
+private fun FeatureComparisonTable(
+    candidate: FeatureRunEvidence,
+    runs: List<FeatureRunEvidence>,
+    colors: List<Color>,
+    imperial: Boolean,
+) {
+    val differentMounts = runs.map { it.observation.mountingMode }.filterNotNull().distinct().size > 1
+    val rows = listOf<Pair<String, (FeatureRunEvidence) -> String>>(
+        "Date" to { formatDate(it.observation.createdAt) },
+        "Takeoff gap" to { run -> if (run == candidate) "—" else formatDistance(takeoffDistanceMeters(candidate, run), imperial) },
+        "Approach Δ" to { run -> bearingDifferenceDegrees(candidate.observation.approachBearingDegrees, run.observation.approachBearingDegrees)?.let { String.format(Locale.US, "%.0f°", it) } ?: "—" },
+        "Exit Δ" to { run -> bearingDifferenceDegrees(candidate.observation.exitBearingDegrees, run.observation.exitBearingDegrees)?.let { String.format(Locale.US, "%.0f°", it) } ?: "—" },
+        "Takeoff speed" to { formatFeatureSpeed(it.observation.takeoffSpeedMps, imperial) },
+        "Airtime" to { String.format(Locale.US, "%.2fs", it.observation.airtimeSeconds) },
+        "Height" to { formatHeight(it.observation.heightMeters, imperial) },
+        "Distance" to { formatDistance(it.observation.distanceMeters, imperial) },
+        "Landing peak" to { if (differentMounts) "Not comparable" else it.observation.landingPeakG?.let { value -> String.format(Locale.US, "%.1fg", value) } ?: "—" },
+        "Mounting" to { it.observation.mountingMode?.name?.lowercase()?.replace('_', ' ') ?: "Unknown" },
+    )
+    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.padding(12.dp).horizontalScroll(rememberScrollState())) {
+            Row {
+                Text("Metric", Modifier.width(120.dp), fontWeight = FontWeight.Bold)
+                runs.forEachIndexed { index, _ ->
+                    Text(if (index == 0) "New" else "Run $index", Modifier.width(132.dp), color = colors[index], fontWeight = FontWeight.Bold)
+                }
+            }
+            rows.forEach { (label, value) ->
+                HorizontalDivider()
+                Row(Modifier.padding(vertical = 7.dp)) {
+                    Text(label, Modifier.width(120.dp), fontWeight = FontWeight.Medium)
+                    runs.forEach { Text(value(it), Modifier.width(132.dp)) }
+                }
+            }
+        }
+    }
+    if (differentMounts) Text("Sensor-dependent values are not directly comparable across mounting modes.", color = Amber)
+}
+
+@Composable
+private fun FeatureAccelerationComparison(runs: List<FeatureRunEvidence>, colors: List<Color>) {
+    var vertical by rememberSaveable { mutableStateOf(false) }
+    val analyses = remember(runs) { runs.map { JumpSensorAnalyzer.analyze(it.jump, it.motion, it.ride.mountingMode) } }
+    val verticalAvailable = analyses.all { it.worldVerticalAcceleration.size >= 2 }
+    LaunchedEffect(verticalAvailable) { if (!verticalAvailable) vertical = false }
+    val series = runs.mapIndexed { index, run ->
+        if (vertical) analyses[index].worldVerticalAcceleration.map { TimedValue(it.timestampMillis - run.jump.takeoffAt, it.value / 9.80665) }
+        else accelerationTrace(run.jump, run.motion.accelerationFrames()).map { TimedValue(it.millisFromTakeoff, it.magnitudeG) }
+    }
+    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Acceleration aligned at takeoff", fontWeight = FontWeight.Bold)
+                Row {
+                    FilterChip(selected = !vertical, onClick = { vertical = false }, label = { Text("Total force") })
+                    Spacer(Modifier.width(6.dp))
+                    FilterChip(selected = vertical, onClick = { vertical = true }, enabled = verticalAvailable, label = { Text("Vertical") })
+                }
+            }
+            val usable = series.flatten()
+            if (usable.size < 2) Text("Sensor trace unavailable") else {
+                val scroll = rememberScrollState()
+                val width = 900.dp
+                val outlineColor = MaterialTheme.colorScheme.outline
+                LaunchedEffect(scroll.maxValue, runs.map { it.jump.id }) {
+                    if (scroll.maxValue > 0) scroll.scrollTo((scroll.maxValue * .42f).roundToInt())
+                }
+                Column(Modifier.horizontalScroll(scroll)) {
+                    Canvas(Modifier.width(width).height(180.dp)) {
+                        val start = -JumpMotionTrace.PRE_TAKEOFF_MILLIS.toFloat()
+                        val end = (runs.maxOf { it.jump.landingAt - it.jump.takeoffAt } + JumpMotionTrace.POST_LANDING_MILLIS).toFloat()
+                        val min = minOf(-1.5, usable.minOf { it.value })
+                        val max = maxOf(2.0, usable.maxOf { it.value })
+                        fun x(t: Long) = (t - start) / (end - start) * size.width
+                        fun y(v: Double) = ((max - v) / (max - min) * size.height).toFloat()
+                        drawLine(outlineColor, Offset(x(0), 0f), Offset(x(0), size.height), 2f)
+                        series.forEachIndexed { index, values ->
+                            if (values.size < 2) return@forEachIndexed
+                            val path = Path()
+                            values.forEachIndexed { pointIndex, point ->
+                                if (pointIndex == 0) path.moveTo(x(point.timestampMillis), y(point.value))
+                                else path.lineTo(x(point.timestampMillis), y(point.value))
+                            }
+                            drawPath(path, colors[index], style = Stroke(width = if (index == 0) 5f else 3f, cap = StrokeCap.Round))
+                            val landing = runs[index].jump.landingAt - runs[index].jump.takeoffAt
+                            drawLine(colors[index], Offset(x(landing), 0f), Offset(x(landing), size.height), 2f)
+                        }
+                    }
+                }
+                Text("Swipe to inspect the retained 10-second context; each colored marker shows that run’s landing.", style = MaterialTheme.typography.labelMedium)
+            }
+            runs.forEachIndexed { index, run ->
+                Text(
+                    "${if (index == 0) "New" else "Run $index"}: ${if (run.sensorTraceAvailable) "sensor trace" else "Sensor trace unavailable"}",
+                    color = colors[index],
+                )
+            }
+            if (!verticalAvailable) Text("Vertical requires usable orientation data for every visible run.", style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+private fun featureRunColors() = listOf(Amber, TrailCyan, Color(0xFFA7E34B), Color(0xFF9C8CFF), Color(0xFF54B6FF), Color(0xFF34C59A), Color(0xFF5E8CFF))
+
+private fun featureRunColorHex(index: Int) = listOf("#FFB84D", "#42D9E8", "#A7E34B", "#9C8CFF", "#54B6FF", "#34C59A", "#5E8CFF")[index]
 
 @Composable
 private fun FeatureDetailScreen(
