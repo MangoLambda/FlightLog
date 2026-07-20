@@ -14,11 +14,16 @@ import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.TrailState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.example.flightlog.domain.FeatureAssignmentSource
+import com.example.flightlog.domain.FeatureAssignmentState
+import com.example.flightlog.tracking.PhysicalFeatureAnalyzer
 
 class RideRepository(private val database: FlightLogDatabase) {
     private val dao = database.dao()
     val rides: Flow<List<RideEntity>> = dao.observeRides()
     val jumps: Flow<List<JumpEventEntity>> = dao.observeJumps()
+    val physicalFeatures: Flow<List<PhysicalFeatureEntity>> = dao.observePhysicalFeatures()
+    val featureObservations: Flow<List<FeatureObservationEntity>> = dao.observeFeatureObservations()
     val trails: Flow<List<TrailEntity>> = dao.observeVisibleTrails()
     val sections: Flow<List<TrailSectionEntity>> = dao.observeSections()
     val passes: Flow<List<TrailPassEntity>> = dao.observePasses()
@@ -45,8 +50,21 @@ class RideRepository(private val database: FlightLogDatabase) {
         }
         .catch { emit(MotionTelemetry.EMPTY) }
     fun stops(rideId: Long) = dao.observeStopEventsForRide(rideId)
-    suspend fun setJumpStatus(id: Long, status: JumpStatus) = dao.setJumpStatus(id, status)
-    suspend fun setCorrectedFlightKind(id: Long, kind: FlightKind?) = dao.setCorrectedFlightKind(id, kind)
+    suspend fun setJumpStatus(id: Long, status: JumpStatus) {
+        dao.setJumpStatus(id, status)
+        if (status != JumpStatus.CONFIRMED) {
+            dao.deleteFeatureObservationForJump(id)
+            PhysicalFeatureAnalyzer(database).refreshFeatures()
+        } else refreshJumpFeature(id)
+    }
+    suspend fun setCorrectedFlightKind(id: Long, kind: FlightKind?) {
+        dao.setCorrectedFlightKind(id, kind)
+        val observation = dao.featureObservationForJump(id)
+        if (observation?.assignmentSource != FeatureAssignmentSource.RIDER) {
+            dao.deleteFeatureObservationForJump(id)
+            refreshJumpFeature(id)
+        }
+    }
     suspend fun updateJump(jump: JumpEventEntity) = dao.updateJump(jump)
     suspend fun ride(id: Long) = dao.ride(id)
     suspend fun pointSnapshot(id: Long) = compactedPoints(id)
@@ -55,6 +73,60 @@ class RideRepository(private val database: FlightLogDatabase) {
     fun observeSpatialProfiles(rideId: Long) = dao.observeSpatialProfiles(rideId)
     suspend fun jumpSnapshot(id: Long) = dao.jumps(id)
     suspend fun deleteRide(id: Long): Boolean = dao.deleteFinishedRide(id) > 0
+
+    private suspend fun refreshJumpFeature(jumpId: Long) {
+        var jump: Pair<RideEntity, JumpEventEntity>? = null
+        for (ride in dao.allRides()) {
+            val found = dao.jumps(ride.id).firstOrNull { it.id == jumpId }
+            if (found != null) { jump = ride to found; break }
+        }
+        val target = jump ?: return
+        val trace = dao.jumpMotionTrace(jumpId)?.let { runCatching { JumpMotionTrace.decode(it) }.getOrNull() } ?: MotionTelemetry.EMPTY
+        PhysicalFeatureAnalyzer(database).analyzeRide(target.first, listOf(target.second), compactedPoints(target.first.id), trace)
+    }
+
+    suspend fun renameFeature(id: Long, name: String) {
+        val feature = dao.allPhysicalFeatures().firstOrNull { it.id == id } ?: return
+        dao.updatePhysicalFeature(feature.copy(name = name.trim().take(80).ifBlank { feature.name }, updatedAt = System.currentTimeMillis()))
+    }
+
+    suspend fun assignObservation(observationId: Long, featureId: Long?) = database.withTransaction {
+        val observation = dao.allFeatureObservations().firstOrNull { it.id == observationId } ?: return@withTransaction
+        val target = featureId ?: run {
+            val jump = dao.allRides().flatMap { dao.jumps(it.id) }.firstOrNull { it.id == observation.jumpId } ?: return@withTransaction
+            dao.insertPhysicalFeature(PhysicalFeatureEntity(
+                name = "${if (jump.displayFlightKind == FlightKind.DROP) "Drop" else "Jump"} ${dao.allPhysicalFeatures().count { it.kind == jump.displayFlightKind } + 1}",
+                kind = jump.displayFlightKind, latitude = observation.latitude, longitude = observation.longitude,
+                approachBearingDegrees = observation.approachBearingDegrees, exitBearingDegrees = observation.exitBearingDegrees,
+                confidence = 100,
+            ))
+        }
+        dao.updateFeatureObservation(observation.copy(featureId = target, assignmentState = FeatureAssignmentState.MATCHED,
+            assignmentSource = FeatureAssignmentSource.RIDER, matchConfidence = 100))
+        PhysicalFeatureAnalyzer(database).refreshFeatures()
+    }
+
+    suspend fun mergeFeatures(retainedId: Long, duplicateId: Long) = database.withTransaction {
+        val featureIds = dao.allPhysicalFeatures().mapTo(hashSetOf()) { it.id }
+        if (retainedId == duplicateId || retainedId !in featureIds || duplicateId !in featureIds) return@withTransaction
+        dao.featureObservations(duplicateId).forEach { dao.updateFeatureObservation(it.copy(
+            featureId = retainedId, assignmentState = FeatureAssignmentState.MATCHED,
+            assignmentSource = FeatureAssignmentSource.RIDER, matchConfidence = 100,
+        )) }
+        dao.deletePhysicalFeature(duplicateId)
+        PhysicalFeatureAnalyzer(database).refreshFeatures()
+    }
+
+    suspend fun splitFeature(featureId: Long, observationIds: Set<Long>) = database.withTransaction {
+        val observations = dao.featureObservations(featureId).filter { it.id in observationIds }
+        if (observations.isEmpty()) return@withTransaction
+        val original = dao.allPhysicalFeatures().firstOrNull { it.id == featureId } ?: return@withTransaction
+        val newId = dao.insertPhysicalFeature(original.copy(id = 0, uuid = java.util.UUID.randomUUID().toString(),
+            name = "${original.name} split", observationCount = observations.size, createdAt = System.currentTimeMillis()))
+        observations.forEach { dao.updateFeatureObservation(it.copy(featureId = newId,
+            assignmentSource = FeatureAssignmentSource.RIDER, assignmentState = FeatureAssignmentState.MATCHED, matchConfidence = 100)) }
+        PhysicalFeatureAnalyzer(database).refreshFeatures()
+    }
 
     suspend fun previewBulkRideDeletion(rideIds: Set<Long>): BulkRideDeletePreview {
         val rides = dao.allRides()

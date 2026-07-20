@@ -13,6 +13,8 @@ enum class SectionState { SUGGESTED, CONFIRMED }
 enum class RoughnessKind { BIKE_ROUGHNESS, RIDER_DISTURBANCE }
 enum class EffortInvalidReason { STOP, GPS_GAP }
 enum class PauseZoneState { CANDIDATE, AUTOMATIC, USER_LOCKED, DISMISSED }
+enum class FeatureAssignmentState { MATCHED, REVIEW, UNGROUPED }
+enum class FeatureAssignmentSource { AUTOMATIC, RIDER }
 data class JumpEstimate(
     val flightTimeSeconds: Double,
     val heightMeters: Double,

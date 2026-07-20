@@ -18,6 +18,8 @@ import com.example.flightlog.domain.SectionState
 import com.example.flightlog.domain.TelemetryKind
 import com.example.flightlog.domain.TrailState
 import java.util.UUID
+import com.example.flightlog.domain.FeatureAssignmentState
+import com.example.flightlog.domain.FeatureAssignmentSource
 
 @Entity(tableName = "rides", indices = [Index(value = ["uuid"], unique = true)])
 data class RideEntity(
@@ -113,6 +115,53 @@ data class JumpMotionTraceEntity(
     val sampleCount: Int,
     val payload: ByteArray,
     val checksum: String,
+)
+
+@Entity(tableName = "physical_features", indices = [Index(value = ["uuid"], unique = true), Index("updatedAt")])
+data class PhysicalFeatureEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val uuid: String = UUID.randomUUID().toString(),
+    val name: String,
+    val kind: FlightKind,
+    val latitude: Double,
+    val longitude: Double,
+    val approachBearingDegrees: Double? = null,
+    val exitBearingDegrees: Double? = null,
+    val confidence: Int,
+    val observationCount: Int = 1,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+@Entity(
+    tableName = "feature_observations",
+    foreignKeys = [
+        ForeignKey(entity = JumpEventEntity::class, parentColumns = ["id"], childColumns = ["jumpId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = PhysicalFeatureEntity::class, parentColumns = ["id"], childColumns = ["featureId"], onDelete = ForeignKey.SET_NULL),
+    ],
+    indices = [Index("featureId"), Index("jumpId", unique = true), Index("assignmentState")],
+)
+data class FeatureObservationEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val jumpId: Long,
+    val featureId: Long? = null,
+    val assignmentState: FeatureAssignmentState,
+    val assignmentSource: FeatureAssignmentSource = FeatureAssignmentSource.AUTOMATIC,
+    val matchConfidence: Int,
+    val latitude: Double,
+    val longitude: Double,
+    val gpsAccuracyMeters: Float,
+    val approachBearingDegrees: Double? = null,
+    val exitBearingDegrees: Double? = null,
+    val takeoffSpeedMps: Double? = null,
+    val airtimeSeconds: Double,
+    val heightMeters: Double,
+    val distanceMeters: Double,
+    val landingPeakG: Double? = null,
+    val landingSmoothness: Int? = null,
+    val mountingMode: MountingMode? = null,
+    val metricVersion: Int = 1,
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 @Entity(

@@ -15,8 +15,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TelemetryChunkEntity::class, SpatialProfileEntity::class, TrailEntity::class,
         StopEventEntity::class, TrailPauseZoneEntity::class, TrailSectionEntity::class,
         TrailPassEntity::class, TrailStopObservationEntity::class, SectionEffortEntity::class,
+        PhysicalFeatureEntity::class, FeatureObservationEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -31,7 +32,7 @@ abstract class FlightLogDatabase : RoomDatabase() {
                 context.applicationContext,
                 FlightLogDatabase::class.java,
                 "flightlog.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build().also { instance = it }
         }
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -121,6 +122,17 @@ abstract class FlightLogDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE jump_events ADD COLUMN estimatedFlightKind TEXT NOT NULL DEFAULT 'UNCERTAIN'")
                 db.execSQL("ALTER TABLE jump_events ADD COLUMN correctedFlightKind TEXT")
                 db.execSQL("ALTER TABLE jump_events ADD COLUMN flightKindConfidence INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""CREATE TABLE physical_features (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, uuid TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, approachBearingDegrees REAL, exitBearingDegrees REAL, confidence INTEGER NOT NULL, observationCount INTEGER NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)""")
+                db.execSQL("CREATE UNIQUE INDEX index_physical_features_uuid ON physical_features(uuid)")
+                db.execSQL("CREATE INDEX index_physical_features_updatedAt ON physical_features(updatedAt)")
+                db.execSQL("""CREATE TABLE feature_observations (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, jumpId INTEGER NOT NULL, featureId INTEGER, assignmentState TEXT NOT NULL, assignmentSource TEXT NOT NULL, matchConfidence INTEGER NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, gpsAccuracyMeters REAL NOT NULL, approachBearingDegrees REAL, exitBearingDegrees REAL, takeoffSpeedMps REAL, airtimeSeconds REAL NOT NULL, heightMeters REAL NOT NULL, distanceMeters REAL NOT NULL, landingPeakG REAL, landingSmoothness INTEGER, mountingMode TEXT, metricVersion INTEGER NOT NULL, createdAt INTEGER NOT NULL, FOREIGN KEY(jumpId) REFERENCES jump_events(id) ON UPDATE NO ACTION ON DELETE CASCADE, FOREIGN KEY(featureId) REFERENCES physical_features(id) ON UPDATE NO ACTION ON DELETE SET NULL)""")
+                db.execSQL("CREATE INDEX index_feature_observations_featureId ON feature_observations(featureId)")
+                db.execSQL("CREATE UNIQUE INDEX index_feature_observations_jumpId ON feature_observations(jumpId)")
+                db.execSQL("CREATE INDEX index_feature_observations_assignmentState ON feature_observations(assignmentState)")
             }
         }
     }

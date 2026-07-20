@@ -17,6 +17,10 @@ interface FlightLogDao {
     @Update suspend fun updateRide(ride: RideEntity)
     @Insert suspend fun insertTrackPoint(point: TrackPointEntity): Long
     @Insert suspend fun insertJump(jump: JumpEventEntity): Long
+    @Insert suspend fun insertPhysicalFeature(feature: PhysicalFeatureEntity): Long
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertFeatureObservation(observation: FeatureObservationEntity): Long
+    @Update suspend fun updatePhysicalFeature(feature: PhysicalFeatureEntity)
+    @Update suspend fun updateFeatureObservation(observation: FeatureObservationEntity)
     @Update suspend fun updateJump(jump: JumpEventEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertJumpMotionTrace(trace: JumpMotionTraceEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertTelemetryChunk(chunk: TelemetryChunkEntity)
@@ -44,6 +48,12 @@ interface FlightLogDao {
 
     @Query("SELECT * FROM jump_events ORDER BY takeoffAt DESC")
     fun observeJumps(): Flow<List<JumpEventEntity>>
+
+    @Query("SELECT * FROM physical_features ORDER BY updatedAt DESC")
+    fun observePhysicalFeatures(): Flow<List<PhysicalFeatureEntity>>
+
+    @Query("SELECT * FROM feature_observations ORDER BY createdAt DESC")
+    fun observeFeatureObservations(): Flow<List<FeatureObservationEntity>>
 
     @Query("SELECT * FROM jump_events WHERE rideId = :rideId ORDER BY takeoffAt")
     fun observeJumpsForRide(rideId: Long): Flow<List<JumpEventEntity>>
@@ -179,6 +189,27 @@ interface FlightLogDao {
 
     @Query("SELECT * FROM rides ORDER BY startedAt")
     suspend fun allRides(): List<RideEntity>
+
+    @Query("SELECT * FROM physical_features ORDER BY updatedAt DESC")
+    suspend fun allPhysicalFeatures(): List<PhysicalFeatureEntity>
+
+    @Query("SELECT * FROM feature_observations ORDER BY createdAt")
+    suspend fun allFeatureObservations(): List<FeatureObservationEntity>
+
+    @Query("SELECT * FROM feature_observations WHERE featureId = :featureId ORDER BY createdAt")
+    suspend fun featureObservations(featureId: Long): List<FeatureObservationEntity>
+
+    @Query("SELECT * FROM feature_observations WHERE jumpId = :jumpId LIMIT 1")
+    suspend fun featureObservationForJump(jumpId: Long): FeatureObservationEntity?
+
+    @Query("DELETE FROM feature_observations WHERE jumpId = :jumpId")
+    suspend fun deleteFeatureObservationForJump(jumpId: Long)
+
+    @Query("DELETE FROM physical_features WHERE id = :featureId")
+    suspend fun deletePhysicalFeature(featureId: Long)
+
+    @Query("DELETE FROM physical_features WHERE id NOT IN (SELECT DISTINCT featureId FROM feature_observations WHERE featureId IS NOT NULL)")
+    suspend fun deleteEmptyPhysicalFeatures()
 
     @Query("SELECT * FROM rides WHERE endedAt IS NOT NULL AND (archivedAt IS NULL OR analysisVersion < :analysisVersion) ORDER BY startedAt")
     suspend fun ridesNeedingProcessing(analysisVersion: Int): List<RideEntity>

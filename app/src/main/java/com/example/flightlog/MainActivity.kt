@@ -75,6 +75,8 @@ import com.example.flightlog.data.TrailDefinitionDraft
 import com.example.flightlog.data.TrailEditImpact
 import com.example.flightlog.data.BulkRideDeletePreview
 import com.example.flightlog.data.BulkRideDeleteResult
+import com.example.flightlog.data.PhysicalFeatureEntity
+import com.example.flightlog.data.FeatureObservationEntity
 import com.example.flightlog.domain.AggregatePeriod
 import com.example.flightlog.domain.EffortInvalidReason
 import com.example.flightlog.domain.JumpStatus
@@ -82,6 +84,7 @@ import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.TrailState
 import com.example.flightlog.domain.RideState
+import com.example.flightlog.domain.FeatureAssignmentState
 import com.example.flightlog.maps.MapApiKeyStore
 import com.example.flightlog.maps.MapTileCache
 import com.example.flightlog.maps.TileCacheState
@@ -148,6 +151,8 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val context = LocalContext.current
     val rides by vm.rides.collectAsStateWithLifecycle()
     val jumps by vm.jumps.collectAsStateWithLifecycle()
+    val physicalFeatures by vm.physicalFeatures.collectAsStateWithLifecycle()
+    val featureObservations by vm.featureObservations.collectAsStateWithLifecycle()
     val trails by vm.trails.collectAsStateWithLifecycle()
     val sections by vm.sections.collectAsStateWithLifecycle()
     val passes by vm.passes.collectAsStateWithLifecycle()
@@ -158,6 +163,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val selectedRideId by vm.selectedRideId.collectAsStateWithLifecycle()
     val selectedJumpId by vm.selectedJumpId.collectAsStateWithLifecycle()
     val selectedTrailId by vm.selectedTrailId.collectAsStateWithLifecycle()
+    val selectedFeatureId by vm.selectedFeatureId.collectAsStateWithLifecycle()
     val selectedPassAId by vm.selectedPassAId.collectAsStateWithLifecycle()
     val selectedPassBId by vm.selectedPassBId.collectAsStateWithLifecycle()
     val comparisonProfilesA by vm.comparisonProfilesA.collectAsStateWithLifecycle()
@@ -333,10 +339,11 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
         return
     }
 
-    BackHandler(enabled = screen == AppScreen.REVIEW || screen == AppScreen.JUMP_DETAIL || screen == AppScreen.TRAIL_DETAIL) {
+    BackHandler(enabled = screen == AppScreen.REVIEW || screen == AppScreen.JUMP_DETAIL || screen == AppScreen.TRAIL_DETAIL || screen == AppScreen.FEATURE_DETAIL) {
         vm.screen.value = when (screen) {
             AppScreen.JUMP_DETAIL -> AppScreen.REVIEW
             AppScreen.TRAIL_DETAIL -> AppScreen.TRAILS
+            AppScreen.FEATURE_DETAIL -> AppScreen.FEATURES
             else -> AppScreen.HISTORY
         }
     }
@@ -346,7 +353,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
-            if (screen in setOf(AppScreen.RIDE, AppScreen.HISTORY, AppScreen.TRAILS, AppScreen.STATS, AppScreen.SETTINGS)) {
+            if (screen in setOf(AppScreen.RIDE, AppScreen.HISTORY, AppScreen.TRAILS, AppScreen.FEATURES, AppScreen.SETTINGS)) {
                 FlightLogNavigation(screen) { vm.screen.value = it }
             }
         },
@@ -356,6 +363,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                 AppScreen.REVIEW -> "${screen.name}:$selectedRideId"
                 AppScreen.JUMP_DETAIL -> "${screen.name}:$selectedJumpId"
                 AppScreen.TRAIL_DETAIL -> "${screen.name}:$selectedTrailId"
+                AppScreen.FEATURE_DETAIL -> "${screen.name}:$selectedFeatureId"
                 else -> screen.name
             }
             screenStateHolder.SaveableStateProvider(screenStateKey) {
@@ -370,7 +378,8 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onDelete = vm::deleteRides,
                     )
                     AppScreen.TRAILS -> TrailsScreen(trails, sections, passes, efforts, imperial, vm::openTrail)
-                    AppScreen.STATS -> StatsScreen(rides, jumps, imperial)
+                    AppScreen.FEATURES -> FeaturesScreen(physicalFeatures, featureObservations, rides, jumps, imperial,
+                        effectiveMapApiKey, mapStyle, vm::openFeature, vm::assignFeatureObservation, openMapSettings)
                     AppScreen.SETTINGS -> SettingsScreen(
                         imperial = imperial,
                         recordingSettings = recordingSettings,
@@ -459,6 +468,13 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onAddSection = vm::addManualSection,
                         onUpdateSection = vm::updateSection,
                         onSavePauseZones = vm::savePauseZones,
+                    )
+                    AppScreen.FEATURE_DETAIL -> FeatureDetailScreen(
+                        feature = physicalFeatures.firstOrNull { it.id == selectedFeatureId },
+                        observations = featureObservations.filter { it.featureId == selectedFeatureId },
+                        allFeatures = physicalFeatures, imperial = imperial,
+                        onBack = { vm.screen.value = AppScreen.FEATURES }, onRename = vm::renameFeature,
+                        onAssign = vm::assignFeatureObservation, onMerge = vm::mergeFeatures, onSplit = vm::splitFeature,
                     )
                 }
             }
@@ -556,7 +572,7 @@ private fun FlightLogNavigation(selected: AppScreen, onSelect: (AppScreen) -> Un
             Triple(AppScreen.RIDE, Icons.Default.Map, "Ride"),
             Triple(AppScreen.HISTORY, Icons.Default.History, "History"),
             Triple(AppScreen.TRAILS, Icons.Default.Route, "Trails"),
-            Triple(AppScreen.STATS, Icons.Default.BarChart, "Stats"),
+            Triple(AppScreen.FEATURES, Icons.Default.Landscape, "Features"),
             Triple(AppScreen.SETTINGS, Icons.Default.Settings, "Settings"),
         ).forEach { (screen, icon, label) ->
             NavigationBarItem(
@@ -1925,6 +1941,169 @@ internal fun invalidEffortMessage(efforts: List<SectionEffortEntity>): String {
         else -> "No uninterrupted effort is available for this split yet."
     }
 }
+
+@Composable
+private fun FeaturesScreen(
+    features: List<PhysicalFeatureEntity>, observations: List<FeatureObservationEntity>,
+    rides: List<RideEntity>, jumps: List<JumpEventEntity>, imperial: Boolean,
+    mapApiKey: String, mapStyle: MapStyle, onOpen: (Long) -> Unit, onAssign: (Long, Long?) -> Unit,
+    onConfigureMap: () -> Unit,
+) {
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    Column(Modifier.fillMaxSize()) {
+        Text("Physical features", Modifier.padding(20.dp, 20.dp, 20.dp, 8.dp), style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        PrimaryTabRow(selectedTabIndex = tab) {
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Features") })
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Stats") })
+        }
+        if (tab == 1) { StatsScreen(rides, jumps, imperial); return@Column }
+        val review = observations.filter { it.assignmentState == FeatureAssignmentState.REVIEW }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (features.isNotEmpty()) item {
+                Card(Modifier.fillMaxWidth().height(220.dp)) {
+                    TrailMap(
+                        points = emptyList(),
+                        jumps = features.map { feature -> JumpEventEntity(
+                            id = -feature.id, rideId = 0, takeoffAt = feature.updatedAt, landingAt = feature.updatedAt,
+                            estimatedFlightSeconds = 0.0, estimatedHeightMeters = 0.0, estimatedDistanceMeters = 0.0,
+                            confidence = feature.confidence, sensorQuality = com.example.flightlog.domain.SensorQuality.DEGRADED,
+                            estimatedFlightKind = feature.kind, latitude = feature.latitude, longitude = feature.longitude,
+                        ) },
+                        apiKey = mapApiKey, mapStyle = mapStyle, modifier = Modifier.fillMaxSize(), onConfigureMap = onConfigureMap,
+                        fitRoute = true, onJumpClick = { onOpen(-it) },
+                    )
+                }
+            }
+            if (review.isNotEmpty()) {
+                item { Text("Needs review (${review.size})", style = MaterialTheme.typography.titleLarge, color = Amber, fontWeight = FontWeight.Bold) }
+                items(review, key = { "review:${it.id}" }) { observation ->
+                    val proposal = features.firstOrNull { it.id == observation.featureId }
+                    Card { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Is this ${proposal?.name ?: "an existing feature"}?", fontWeight = FontWeight.Bold)
+                        Text("${observation.matchConfidence}% match • ${formatCoordinate(observation.latitude)}, ${formatCoordinate(observation.longitude)}")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { proposal?.id?.let { onAssign(observation.id, it) } }, enabled = proposal != null) { Text("Accept") }
+                            OutlinedButton(onClick = { onAssign(observation.id, null) }) { Text("New feature") }
+                        }
+                    } }
+                }
+            }
+            item { Text("Your jumps and drops", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            if (features.isEmpty()) item { EmptyCard("No physical features yet", "Confirmed jumps and drops with usable GPS will be grouped after ride processing.") }
+            items(features, key = { it.id }) { feature ->
+                val values = observations.filter { it.featureId == feature.id && it.assignmentState == FeatureAssignmentState.MATCHED }
+                Card(Modifier.fillMaxWidth().clickable { onOpen(feature.id) }) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(feature.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text("${values.size} ${if (values.size == 1) "run" else "runs"}")
+                        }
+                        Text("${feature.kind.name.lowercase().replaceFirstChar { it.uppercase() }} • ${feature.confidence}% grouping confidence")
+                        values.maxByOrNull { it.createdAt }?.let { latest ->
+                            Text("Latest: ${formatFeatureSpeed(latest.takeoffSpeedMps, imperial)} • ${String.format(Locale.US, "%.2fs", latest.airtimeSeconds)} • ${formatHeight(latest.heightMeters, imperial)}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeatureDetailScreen(
+    feature: PhysicalFeatureEntity?, observations: List<FeatureObservationEntity>, allFeatures: List<PhysicalFeatureEntity>, imperial: Boolean,
+    onBack: () -> Unit, onRename: (Long, String) -> Unit, onAssign: (Long, Long?) -> Unit,
+    onMerge: (Long, Long) -> Unit, onSplit: (Long, Set<Long>) -> Unit,
+) {
+    if (feature == null) { EmptyCard("Feature unavailable", "Return to Features."); return }
+    var editing by rememberSaveable { mutableStateOf(false) }
+    var name by rememberSaveable(feature.id) { mutableStateOf(feature.name) }
+    var selected by rememberSaveable { mutableStateOf(setOf<Long>()) }
+    var metric by rememberSaveable { mutableStateOf("Speed") }
+    var range by rememberSaveable { mutableStateOf("All") }
+    Scaffold(topBar = { TopAppBar(title = { Text(feature.name) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }) }) { padding ->
+        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            item {
+                Card { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${feature.kind.name.lowercase().replaceFirstChar { it.uppercase() }} • ${observations.size} runs", fontWeight = FontWeight.Bold)
+                    Text("${formatCoordinate(feature.latitude)}, ${formatCoordinate(feature.longitude)} • ${feature.confidence}% confidence")
+                    if (editing) Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(name, { name = it }, Modifier.weight(1f), singleLine = true)
+                        TextButton(onClick = { onRename(feature.id, name); editing = false }) { Text("Save") }
+                    } else TextButton(onClick = { editing = true }) { Text("Rename") }
+                    var mergeMenu by remember { mutableStateOf(false) }
+                    Box { OutlinedButton(onClick = { mergeMenu = true }) { Text("Merge duplicate") }
+                        DropdownMenu(mergeMenu, { mergeMenu = false }) { allFeatures.filter { it.id != feature.id }.forEach { other ->
+                            DropdownMenuItem(text = { Text(other.name) }, onClick = { mergeMenu = false; onMerge(feature.id, other.id) })
+                        } }
+                    }
+                    if (selected.isNotEmpty()) Button(onClick = { onSplit(feature.id, selected); selected = emptySet() }) { Text("Split ${selected.size} into new feature") }
+                } }
+            }
+            item {
+                Text("Trends", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { items(listOf("Speed", "Airtime", "Height", "Distance", "Peak G", "Smoothness")) { value ->
+                    FilterChip(selected = metric == value, onClick = { metric = value }, label = { Text(value) })
+                } }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("30 days", "Season", "All").forEach { value ->
+                    FilterChip(selected = range == value, onClick = { range = value }, label = { Text(value) })
+                } }
+            }
+            item {
+                val now = System.currentTimeMillis()
+                val cutoff = when (range) {
+                    "30 days" -> now - 30L * 24 * 60 * 60 * 1_000
+                    "Season" -> LocalDate.now().withDayOfYear(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                    else -> Long.MIN_VALUE
+                }
+                FeatureTrendCard(metric, observations.filter { it.createdAt >= cutoff }.sortedBy { it.createdAt }, imperial)
+            }
+            item { Text("Run history", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            items(observations.sortedByDescending { it.createdAt }, key = { it.id }) { observation ->
+                Card { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(observation.id in selected, { checked -> selected = if (checked) selected + observation.id else selected - observation.id })
+                        Text(formatDate(observation.createdAt), Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                        var moveMenu by remember { mutableStateOf(false) }
+                        Box { TextButton(onClick = { moveMenu = true }) { Text("Move") }; DropdownMenu(moveMenu, { moveMenu = false }) {
+                            allFeatures.filter { it.id != feature.id }.forEach { other -> DropdownMenuItem(text = { Text(other.name) }, onClick = { moveMenu = false; onAssign(observation.id, other.id) }) }
+                            DropdownMenuItem(text = { Text("New feature") }, onClick = { moveMenu = false; onAssign(observation.id, null) })
+                        } }
+                    }
+                    Text("${formatFeatureSpeed(observation.takeoffSpeedMps, imperial)} • ${String.format(Locale.US, "%.2fs", observation.airtimeSeconds)} • ${formatHeight(observation.heightMeters, imperial)} • ${formatDistance(observation.distanceMeters, imperial)}")
+                    Text("Landing ${observation.landingPeakG?.let { String.format(Locale.US, "%.1f G", it) } ?: "—"} • smoothness ${observation.landingSmoothness?.toString() ?: "—"}/100")
+                    if (observation.landingPeakG != null) Text("Phone- and mounting-dependent sensor estimate", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } }
+            }
+        }
+    }
+}
+
+@Composable private fun FeatureTrendCard(metric: String, observations: List<FeatureObservationEntity>, imperial: Boolean) {
+    val comparable = if (metric == "Peak G" || metric == "Smoothness") {
+        val latestMode = observations.lastOrNull { it.mountingMode != null }?.mountingMode
+        observations.filter { it.mountingMode == latestMode }
+    } else observations
+    val values = comparable.mapNotNull { observation -> when (metric) {
+        "Speed" -> observation.takeoffSpeedMps?.let { if (imperial) it * 2.23694 else it * 3.6 }
+        "Airtime" -> observation.airtimeSeconds; "Height" -> observation.heightMeters * if (imperial) 3.28084 else 1.0
+        "Distance" -> observation.distanceMeters * if (imperial) 3.28084 else 1.0; "Peak G" -> observation.landingPeakG
+        else -> observation.landingSmoothness?.toDouble()
+    } }
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (values.isEmpty()) Text("No comparable measurements yet") else {
+            val best = if (metric == "Peak G") values.minOrNull()!! else values.maxOrNull()!!
+            val change = values.takeIf { it.size > 1 }?.let { it.last() - it[it.lastIndex - 1] }
+            Text("Latest ${String.format(Locale.US, "%.1f", values.last())} • Best ${String.format(Locale.US, "%.1f", best)} • Median ${String.format(Locale.US, "%.1f", values.sorted()[values.size / 2])}", fontWeight = FontWeight.Bold)
+            change?.let { Text("${if (it >= 0) "+" else ""}${String.format(Locale.US, "%.1f", it)} vs previous run") }
+            if (metric == "Peak G" || metric == "Smoothness") Text("Compared only with the same phone mounting mode", style = MaterialTheme.typography.bodySmall)
+            values.takeLast(12).forEachIndexed { index, value -> LinearProgressIndicator({ (value / values.maxOrNull()!!.coerceAtLeast(.01)).toFloat() }, Modifier.fillMaxWidth()) }
+        }
+    } }
+}
+
+private fun formatCoordinate(value: Double) = String.format(Locale.US, "%.5f", value)
+private fun formatFeatureSpeed(value: Double?, imperial: Boolean) = value?.let { formatSpeed(it, imperial) } ?: "—"
 
 @Composable
 private fun StatsScreen(rides: List<RideEntity>, jumps: List<JumpEventEntity>, imperial: Boolean) {

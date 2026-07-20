@@ -30,7 +30,7 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 object TrailAnalysis {
-    const val ANALYSIS_VERSION = 6
+    const val ANALYSIS_VERSION = 7
     const val EFFORT_VERSION = 4
     const val BIN_METERS = 5.0
     private const val MAX_GPS_ACCURACY_METERS = 25f
@@ -536,6 +536,7 @@ class RideProcessor(private val database: FlightLogDatabase) {
             dao.updateRide(ride.copy(archivedAt = System.currentTimeMillis(), analysisVersion = TrailAnalysis.ANALYSIS_VERSION))
             dao.deleteTrackPoints(rideId)
         }
+        PhysicalFeatureAnalyzer(database).analyzeRide(ride, dao.jumps(rideId), points, motionTelemetry)
         analyzeTrail(rideId, profiles)
     }
 

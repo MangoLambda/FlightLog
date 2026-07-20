@@ -42,7 +42,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-enum class AppScreen { RIDE, HISTORY, TRAILS, STATS, SETTINGS, REVIEW, JUMP_DETAIL, TRAIL_DETAIL }
+enum class AppScreen { RIDE, HISTORY, TRAILS, FEATURES, SETTINGS, REVIEW, JUMP_DETAIL, TRAIL_DETAIL, FEATURE_DETAIL }
 sealed interface BackupUiState {
     data object Idle : BackupUiState
     data object Working : BackupUiState
@@ -56,6 +56,8 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     private val repository = app.repository
     val rides = repository.rides.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val jumps = repository.jumps.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val physicalFeatures = repository.physicalFeatures.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val featureObservations = repository.featureObservations.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val trails = repository.trails.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val sections = repository.sections.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val passes = repository.passes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -72,6 +74,7 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     val selectedRideId = MutableStateFlow<Long?>(null)
     val selectedJumpId = MutableStateFlow<Long?>(null)
     val selectedTrailId = MutableStateFlow<Long?>(null)
+    val selectedFeatureId = MutableStateFlow<Long?>(null)
     val selectedPassAId = MutableStateFlow<Long?>(null)
     val selectedPassBId = MutableStateFlow<Long?>(null)
     val backupState = MutableStateFlow<BackupUiState>(BackupUiState.Idle)
@@ -184,6 +187,12 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
         selectedPassBId.value = trailPasses.drop(1).firstOrNull()?.id
         screen.value = AppScreen.TRAIL_DETAIL
     }
+
+    fun openFeature(featureId: Long) { selectedFeatureId.value = featureId; screen.value = AppScreen.FEATURE_DETAIL }
+    fun renameFeature(featureId: Long, name: String) = viewModelScope.launch { repository.renameFeature(featureId, name) }
+    fun assignFeatureObservation(observationId: Long, featureId: Long?) = viewModelScope.launch { repository.assignObservation(observationId, featureId) }
+    fun mergeFeatures(retainedId: Long, duplicateId: Long) = viewModelScope.launch { repository.mergeFeatures(retainedId, duplicateId) }
+    fun splitFeature(featureId: Long, observationIds: Set<Long>) = viewModelScope.launch { repository.splitFeature(featureId, observationIds) }
 
     suspend fun trailProfiles(rideId: Long) = repository.spatialProfiles(rideId)
 

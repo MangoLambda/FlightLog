@@ -39,6 +39,8 @@ class FlightLogBackup(
         val jumps = rides.flatMap { ride -> dao.jumps(ride.id) }
         val jumpsById = jumps.associateBy { it.id }
         val jumpTraces = dao.allJumpMotionTraces()
+        val physicalFeatures = dao.allPhysicalFeatures()
+        val featureUuids = physicalFeatures.associate { it.id to it.uuid }
         val chunks = dao.allTelemetryChunks().toMutableList()
         rides.filter { ride -> chunks.none { it.rideId == ride.id && it.kind == TelemetryKind.GPS } }.forEach { ride ->
             dao.trackPoints(ride.id).chunked(10_000).filter { it.isNotEmpty() }.forEach { points ->
@@ -55,6 +57,11 @@ class FlightLogBackup(
             zip.jsonLines("jump-traces.jsonl", jumpTraces.map { trace ->
                 val jump = jumpsById.getValue(trace.jumpId)
                 trace.json(rideUuids.getValue(jump.rideId), jump.takeoffAt)
+            })
+            zip.jsonLines("features.jsonl", physicalFeatures.map { it.json() })
+            zip.jsonLines("feature-observations.jsonl", dao.allFeatureObservations().map { observation ->
+                val jump = jumpsById.getValue(observation.jumpId)
+                observation.json(rideUuids.getValue(jump.rideId), jump.takeoffAt, observation.featureId?.let(featureUuids::get))
             })
             zip.jsonLines("chunks.jsonl", chunks.map { it.json(rideUuids.getValue(it.rideId)) })
             zip.jsonLines("profiles.jsonl", dao.allSpatialProfiles().map { it.json(rideUuids.getValue(it.rideId)) })
@@ -100,6 +107,7 @@ class FlightLogBackup(
             require(format in 1..FORMAT_VERSION) { "Unsupported FlightLog backup version" }
             if (format >= 2) require(V2_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
             if (format >= 3) require(V3_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
+            if (format >= 6) require(V6_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
             return database.withTransaction { restore(directory) }
         } finally {
             directory.deleteRecursively()
@@ -160,6 +168,34 @@ class FlightLogBackup(
                     else FlightKind.valueOf(json.getString("correctedFlightKind")),
                 flightKindConfidence = json.optInt("flightKindConfidence", 0).also { require(it in 0..100) },
                 latitude = json.nullableDouble("latitude"), longitude = json.nullableDouble("longitude"),
+            ))
+        }
+        val featureIds = mutableMapOf<String, Long>()
+        directory.forEachJsonIfPresent("features.jsonl") { json ->
+            val uuid = json.requiredUuid("uuid")
+            val existing = dao.allPhysicalFeatures().firstOrNull { it.uuid == uuid }
+            val entity = PhysicalFeatureEntity(
+                uuid = uuid, name = json.getString("name"), kind = FlightKind.valueOf(json.getString("kind")),
+                latitude = json.getDouble("latitude"), longitude = json.getDouble("longitude"),
+                approachBearingDegrees = json.nullableDouble("approachBearingDegrees"), exitBearingDegrees = json.nullableDouble("exitBearingDegrees"),
+                confidence = json.getInt("confidence"), observationCount = json.getInt("observationCount"),
+                createdAt = json.getLong("createdAt"), updatedAt = json.getLong("updatedAt"),
+            )
+            featureIds[uuid] = existing?.id ?: dao.insertPhysicalFeature(entity)
+        }
+        directory.forEachJsonIfPresent("feature-observations.jsonl") { json ->
+            val rideId = rideIds[json.requiredUuid("rideUuid")] ?: error("Feature observation references unknown ride")
+            val jump = dao.jumpByTakeoff(rideId, json.getLong("takeoffAt")) ?: error("Feature observation references unknown jump")
+            if (dao.featureObservationForJump(jump.id) == null) dao.insertFeatureObservation(FeatureObservationEntity(
+                jumpId = jump.id, featureId = json.nullableString("featureUuid")?.let { featureIds[it] },
+                assignmentState = FeatureAssignmentState.valueOf(json.getString("assignmentState")),
+                assignmentSource = FeatureAssignmentSource.valueOf(json.getString("assignmentSource")),
+                matchConfidence = json.getInt("matchConfidence"), latitude = json.getDouble("latitude"), longitude = json.getDouble("longitude"),
+                gpsAccuracyMeters = json.getDouble("gpsAccuracyMeters").toFloat(), approachBearingDegrees = json.nullableDouble("approachBearingDegrees"),
+                exitBearingDegrees = json.nullableDouble("exitBearingDegrees"), takeoffSpeedMps = json.nullableDouble("takeoffSpeedMps"),
+                airtimeSeconds = json.getDouble("airtimeSeconds"), heightMeters = json.getDouble("heightMeters"), distanceMeters = json.getDouble("distanceMeters"),
+                landingPeakG = json.nullableDouble("landingPeakG"), landingSmoothness = json.nullableInt("landingSmoothness"),
+                mountingMode = json.nullableString("mountingMode")?.let(MountingMode::valueOf), metricVersion = json.getInt("metricVersion"), createdAt = json.getLong("createdAt"),
             ))
         }
         directory.forEachJsonIfPresent("jump-traces.jsonl") { json ->
@@ -406,7 +442,7 @@ class FlightLogBackup(
 
     companion object {
         const val MIME_TYPE = "application/zip"
-        private const val FORMAT_VERSION = 5
+        private const val FORMAT_VERSION = 6
         private const val MAX_JUMP_TRACE_SAMPLES = 10_000
         private const val MAX_ENTRY_BYTES = 512L * 1024 * 1024
         private const val MAX_TOTAL_BYTES = 2L * 1024 * 1024 * 1024
@@ -416,7 +452,8 @@ class FlightLogBackup(
         )
         private val V2_METADATA = setOf("stops.jsonl", "pause-zones.jsonl", "stop-observations.jsonl")
         private val V3_METADATA = setOf("jump-traces.jsonl")
-        private val METADATA = REQUIRED_METADATA + V2_METADATA + V3_METADATA
+        private val V6_METADATA = setOf("features.jsonl", "feature-observations.jsonl")
+        private val METADATA = REQUIRED_METADATA + V2_METADATA + V3_METADATA + V6_METADATA
     }
 }
 
@@ -466,6 +503,18 @@ private fun JumpMotionTraceEntity.json(rideUuid: String, takeoffAt: Long) = JSON
     .put("rideUuid", rideUuid).put("takeoffAt", takeoffAt)
     .put("startedAt", startedAt).put("endedAt", endedAt).put("encodingVersion", encodingVersion)
     .put("sampleCount", sampleCount).put("checksum", checksum)
+private fun PhysicalFeatureEntity.json() = JSONObject().put("uuid", uuid).put("name", name).put("kind", kind.name)
+    .put("latitude", latitude).put("longitude", longitude).putNullable("approachBearingDegrees", approachBearingDegrees)
+    .putNullable("exitBearingDegrees", exitBearingDegrees).put("confidence", confidence).put("observationCount", observationCount)
+    .put("createdAt", createdAt).put("updatedAt", updatedAt)
+private fun FeatureObservationEntity.json(rideUuid: String, takeoffAt: Long, featureUuid: String?) = JSONObject()
+    .put("rideUuid", rideUuid).put("takeoffAt", takeoffAt).putNullable("featureUuid", featureUuid)
+    .put("assignmentState", assignmentState.name).put("assignmentSource", assignmentSource.name).put("matchConfidence", matchConfidence)
+    .put("latitude", latitude).put("longitude", longitude).put("gpsAccuracyMeters", gpsAccuracyMeters)
+    .putNullable("approachBearingDegrees", approachBearingDegrees).putNullable("exitBearingDegrees", exitBearingDegrees)
+    .putNullable("takeoffSpeedMps", takeoffSpeedMps).put("airtimeSeconds", airtimeSeconds).put("heightMeters", heightMeters)
+    .put("distanceMeters", distanceMeters).putNullable("landingPeakG", landingPeakG).putNullable("landingSmoothness", landingSmoothness)
+    .putNullable("mountingMode", mountingMode?.name).put("metricVersion", metricVersion).put("createdAt", createdAt)
 private fun TelemetryChunkEntity.json(rideUuid: String) = JSONObject().put("uuid", uuid).put("rideUuid", rideUuid).put("kind", kind.name)
     .put("startedAt", startedAt).put("endedAt", endedAt).put("encodingVersion", encodingVersion).put("sampleCount", sampleCount)
     .put("checksum", checksum).putNullable("expiresAt", expiresAt)
