@@ -5,6 +5,8 @@
 
 ## Fast APK releases
 
+- Builds can take at least three minutes. After starting a Gradle build, wait three minutes before checking whether it has completed; do not start another Gradle build while it is running.
+- Use incremental builds. Do not run `gradlew clean` unless the user explicitly requests a clean build or an incremental build cannot be repaired.
 - Build GitHub release APKs with `./gradlew assembleRelease`. Release builds prioritize turnaround time: code shrinking and resource shrinking are disabled, and Gradle uses a 2 GB heap.
 - Use one final versioned build for a release: update the version first, then run `./gradlew testDebugUnitTest assembleRelease`. This combines unit-test validation with production APK generation and avoids rebuilding the release solely because the version changed. If the command fails, fix the issue and rerun it at the same version; do not publish artifacts from a failed or superseded build.
 - The final APKs are written to `app/build/outputs/apk/release/`:
