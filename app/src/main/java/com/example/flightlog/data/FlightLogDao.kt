@@ -39,7 +39,7 @@ interface FlightLogDao {
     @Insert suspend fun insertPass(pass: TrailPassEntity): Long
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertManualTrailAssignment(assignment: ManualTrailAssignmentEntity)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPassIfAbsent(pass: TrailPassEntity): Long
-    @Insert suspend fun insertEfforts(efforts: List<SectionEffortEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertEfforts(efforts: List<SectionEffortEntity>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertEffortIfAbsent(effort: SectionEffortEntity): Long
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertStopObservations(observations: List<TrailStopObservationEntity>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertStopObservationIfAbsent(observation: TrailStopObservationEntity): Long
