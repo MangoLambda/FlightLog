@@ -2677,7 +2677,8 @@ private fun AdvancedTrailMatchingDialog(
     onDismiss: () -> Unit,
     onApply: (TrailMatchingOptions) -> Unit,
 ) {
-    var value by rememberSaveable(initial) { mutableStateOf(initial) }
+    // This is an in-dialog draft; TrailMatchingOptions is not Parcelable/saveable.
+    var value by remember(initial) { mutableStateOf(initial) }
     @Composable fun slider(label: String, current: Int, range: ClosedFloatingPointRange<Float>, onValue: (Int) -> Unit) {
         Text("$label: $current", fontWeight = FontWeight.Bold)
         Slider(value = current.toFloat(), onValueChange = { onValue(it.roundToInt()) }, valueRange = range)
