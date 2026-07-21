@@ -15,9 +15,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TelemetryChunkEntity::class, SpatialProfileEntity::class, TrailEntity::class,
         StopEventEntity::class, TrailPauseZoneEntity::class, TrailSectionEntity::class,
         TrailPassEntity::class, TrailStopObservationEntity::class, SectionEffortEntity::class,
-        PhysicalFeatureEntity::class, FeatureObservationEntity::class,
+        PhysicalFeatureEntity::class, FeatureObservationEntity::class, ManualTrailAssignmentEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -32,7 +32,7 @@ abstract class FlightLogDatabase : RoomDatabase() {
                 context.applicationContext,
                 FlightLogDatabase::class.java,
                 "flightlog.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build().also { instance = it }
         }
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -133,6 +133,15 @@ abstract class FlightLogDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX index_feature_observations_featureId ON feature_observations(featureId)")
                 db.execSQL("CREATE UNIQUE INDEX index_feature_observations_jumpId ON feature_observations(jumpId)")
                 db.execSQL("CREATE INDEX index_feature_observations_assignmentState ON feature_observations(assignmentState)")
+            }
+        }
+        /** Old passes were allowed at 40% coverage.  Rebuild them under the strict rule. */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""CREATE TABLE manual_trail_assignments (rideId INTEGER NOT NULL, trailId INTEGER NOT NULL, startMeters REAL NOT NULL, endMeters REAL NOT NULL, updatedAt INTEGER NOT NULL, PRIMARY KEY(rideId), FOREIGN KEY(rideId) REFERENCES rides(id) ON UPDATE NO ACTION ON DELETE CASCADE, FOREIGN KEY(trailId) REFERENCES trails(id) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+                db.execSQL("CREATE INDEX index_manual_trail_assignments_trailId ON manual_trail_assignments(trailId)")
+                db.execSQL("DELETE FROM trail_passes")
+                db.execSQL("UPDATE rides SET analysisVersion = 0")
             }
         }
     }

@@ -162,8 +162,10 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val featureObservations by vm.featureObservations.collectAsStateWithLifecycle()
     val featureReviewEvidence by vm.featureReviewEvidence.collectAsStateWithLifecycle()
     val trails by vm.trails.collectAsStateWithLifecycle()
+    val assignableTrails by vm.assignableTrails.collectAsStateWithLifecycle()
     val sections by vm.sections.collectAsStateWithLifecycle()
     val passes by vm.passes.collectAsStateWithLifecycle()
+    val manualTrailAssignments by vm.manualTrailAssignments.collectAsStateWithLifecycle()
     val efforts by vm.efforts.collectAsStateWithLifecycle()
     val pauseZones by vm.pauseZones.collectAsStateWithLifecycle()
     val live by vm.live.collectAsStateWithLifecycle()
@@ -441,6 +443,10 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                         onLoadTrailProfiles = vm::trailProfiles,
                         onPreviewTrail = vm::previewTrailDefinition,
                         onSaveTrail = vm::saveTrailDefinition,
+                        trails = assignableTrails,
+                        manualAssignment = manualTrailAssignments.firstOrNull { it.rideId == selectedRideId },
+                        onAssignTrail = vm::assignRideToTrail,
+                        onClearTrailAssignment = vm::clearRideTrailAssignment,
                     )
                     AppScreen.JUMP_DETAIL -> JumpDetailScreen(
                         jump = selectedJumps.firstOrNull { it.id == selectedJumpId },
@@ -1024,6 +1030,10 @@ private fun ReviewScreen(
     onLoadTrailProfiles: suspend (Long) -> List<SpatialProfileEntity>,
     onPreviewTrail: suspend (TrailDefinitionDraft) -> TrailEditImpact,
     onSaveTrail: suspend (TrailDefinitionDraft, Set<String>) -> Long,
+    trails: List<TrailEntity>,
+    manualAssignment: com.example.flightlog.data.ManualTrailAssignmentEntity?,
+    onAssignTrail: (Long, Long, Double, Double) -> Unit,
+    onClearTrailAssignment: (Long) -> Unit,
 ) {
     if (ride == null) { EmptyCard("Ride unavailable", "This ride could not be loaded."); return }
     val numbers = remember(jumps) { jumpNumbers(jumps) }
@@ -1036,6 +1046,7 @@ private fun ReviewScreen(
     }
     var confirmingDelete by rememberSaveable(ride.id) { mutableStateOf(false) }
     var creatingTrail by rememberSaveable(ride.id) { mutableStateOf(false) }
+    var assigningTrail by rememberSaveable(ride.id) { mutableStateOf(false) }
     if (creatingTrail) {
         TrailBoundaryEditor(
             trailId = null,
@@ -1053,6 +1064,19 @@ private fun ReviewScreen(
             onPreview = onPreviewTrail,
             onSave = onSaveTrail,
             onApplied = { creatingTrail = false },
+        )
+    }
+    if (assigningTrail) {
+        RideTrailAssignmentEditor(
+            ride = ride,
+            trails = trails,
+            assignment = manualAssignment,
+            imperial = imperial,
+            onLoadProfiles = onLoadTrailProfiles,
+            onDismiss = { assigningTrail = false },
+            onAssign = { trailId, start, end -> onAssignTrail(ride.id, trailId, start, end); assigningTrail = false },
+            onClear = { onClearTrailAssignment(ride.id); assigningTrail = false },
+            onCreate = { assigningTrail = false; creatingTrail = true },
         )
     }
     if (confirmingDelete) {
@@ -1084,9 +1108,9 @@ private fun ReviewScreen(
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             actions = {
                 IconButton(
-                    onClick = { creatingTrail = true },
+                    onClick = { assigningTrail = true },
                     enabled = points.isNotEmpty() && ride.state != RideState.RECORDING && ride.state != RideState.PAUSED,
-                ) { Icon(Icons.Default.Route, "Create trail from this ride") }
+                ) { Icon(Icons.Default.Route, "Edit trail assignment") }
                 IconButton(onClick = onShare) { Icon(Icons.Default.Share, "Export GPX and CSV") }
                 IconButton(onClick = { confirmingDelete = true }) { Icon(Icons.Default.Delete, "Delete ride") }
             },
@@ -1195,6 +1219,69 @@ private fun ReviewScreen(
             }
         }
     }
+}
+
+/** Review Ride editor: a selected route span can create a trail or override automatic matching. */
+@Composable
+private fun RideTrailAssignmentEditor(
+    ride: RideEntity,
+    trails: List<TrailEntity>,
+    assignment: com.example.flightlog.data.ManualTrailAssignmentEntity?,
+    imperial: Boolean,
+    onLoadProfiles: suspend (Long) -> List<SpatialProfileEntity>,
+    onDismiss: () -> Unit,
+    onAssign: (Long, Double, Double) -> Unit,
+    onClear: () -> Unit,
+    onCreate: () -> Unit,
+) {
+    var profiles by remember(ride.id) { mutableStateOf(emptyList<SpatialProfileEntity>()) }
+    var selectedTrailId by remember(ride.id, assignment) { mutableStateOf(assignment?.trailId) }
+    var menuExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(ride.id) { profiles = onLoadProfiles(ride.id) }
+    val distances = profiles.map { it.distanceMeters }.sorted()
+    var bounds by remember(ride.id, assignment, distances) {
+        mutableStateOf((assignment?.startMeters ?: distances.firstOrNull() ?: 0.0) to (assignment?.endMeters ?: distances.lastOrNull() ?: 0.0))
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Trail editor") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Select the route portion, then create a named trail or assign it to an existing trail.")
+                if (distances.size >= 2) {
+                    RangeSlider(
+                        value = bounds.first.toFloat()..bounds.second.toFloat(),
+                        onValueChange = { bounds = it.start.toDouble() to it.endInclusive.toDouble() },
+                        valueRange = distances.first().toFloat()..distances.last().toFloat(),
+                    )
+                    Text("${formatDistance(bounds.first, imperial)} – ${formatDistance(bounds.second, imperial)}")
+                } else Text("Loading the processed route…")
+                Box {
+                    OutlinedButton(onClick = { menuExpanded = true }, enabled = trails.isNotEmpty()) {
+                        Text(trails.sortedBy { it.name.lowercase() }.firstOrNull { it.id == selectedTrailId }?.name ?: "Select existing trail")
+                    }
+                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                        trails.sortedWith(compareBy<TrailEntity> { it.name.lowercase() }.thenBy { it.id }).forEach { trail ->
+                            DropdownMenuItem(text = { Text(trail.name) }, onClick = { selectedTrailId = trail.id; menuExpanded = false })
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { selectedTrailId?.let { onAssign(it, bounds.first, bounds.second) } },
+                enabled = selectedTrailId != null && bounds.second - bounds.first >= 10.0,
+            ) { Text(if (assignment == null) "Assign trail" else "Save assignment") }
+        },
+        dismissButton = {
+            Row {
+                if (assignment != null) TextButton(onClick = onClear) { Text("Clear assignment") }
+                TextButton(onClick = onCreate, enabled = distances.size >= 2) { Text("Create new trail") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
 }
 
 @Composable

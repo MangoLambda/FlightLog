@@ -25,8 +25,10 @@ class RideRepository(private val database: FlightLogDatabase) {
     val physicalFeatures: Flow<List<PhysicalFeatureEntity>> = dao.observePhysicalFeatures()
     val featureObservations: Flow<List<FeatureObservationEntity>> = dao.observeFeatureObservations()
     val trails: Flow<List<TrailEntity>> = dao.observeVisibleTrails()
+    val assignableTrails: Flow<List<TrailEntity>> = dao.observeAllTrails()
     val sections: Flow<List<TrailSectionEntity>> = dao.observeSections()
     val passes: Flow<List<TrailPassEntity>> = dao.observePasses()
+    val manualTrailAssignments: Flow<List<ManualTrailAssignmentEntity>> = dao.observeManualTrailAssignments()
     val efforts: Flow<List<SectionEffortEntity>> = dao.observeEfforts()
     val pauseZones: Flow<List<TrailPauseZoneEntity>> = dao.observePauseZones()
     val stopObservations: Flow<List<TrailStopObservationEntity>> = dao.observeStopObservations()
@@ -104,6 +106,24 @@ class RideRepository(private val database: FlightLogDatabase) {
     suspend fun pointSnapshot(id: Long) = compactedPoints(id)
     suspend fun spatialProfiles(rideId: Long) = dao.spatialProfiles(rideId)
     suspend fun trailPasses(trailId: Long) = dao.passes(trailId)
+    suspend fun manualTrailAssignment(rideId: Long) = dao.manualTrailAssignment(rideId)
+    suspend fun assignRideToTrail(rideId: Long, trailId: Long, startMeters: Double, endMeters: Double) {
+        require(startMeters.isFinite() && endMeters.isFinite() && endMeters - startMeters >= 10.0)
+        database.withTransaction {
+            val profiles = dao.spatialProfiles(rideId)
+            require(profiles.size >= 2 && startMeters >= profiles.first().distanceMeters && endMeters <= profiles.last().distanceMeters) {
+                "Choose a valid portion of this ride"
+            }
+            require(dao.allTrails().any { it.id == trailId }) { "Trail no longer exists" }
+            dao.insertManualTrailAssignment(ManualTrailAssignmentEntity(rideId, trailId, startMeters, endMeters))
+        }
+    }
+
+    suspend fun clearRideTrailAssignment(rideId: Long) {
+        val prior = dao.manualTrailAssignment(rideId) ?: return
+        database.withTransaction { dao.deleteManualTrailAssignment(rideId) }
+        // The caller rebuilds the affected trail after this transaction commits.
+    }
     fun observeSpatialProfiles(rideId: Long) = dao.observeSpatialProfiles(rideId)
     suspend fun jumpSnapshot(id: Long) = dao.jumps(id)
     suspend fun deleteRide(id: Long): Boolean = dao.deleteFinishedRide(id) > 0

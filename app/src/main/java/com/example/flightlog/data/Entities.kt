@@ -306,6 +306,23 @@ data class TrailPassEntity(
     @ColumnInfo(defaultValue = "0") val fullRunEligible: Boolean = false,
 )
 
+/** A rider-selected portion of a ride which must be evaluated against one trail. */
+@Entity(
+    tableName = "manual_trail_assignments",
+    foreignKeys = [
+        ForeignKey(entity = RideEntity::class, parentColumns = ["id"], childColumns = ["rideId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = TrailEntity::class, parentColumns = ["id"], childColumns = ["trailId"], onDelete = ForeignKey.CASCADE),
+    ],
+    indices = [Index("trailId")],
+)
+data class ManualTrailAssignmentEntity(
+    @PrimaryKey val rideId: Long,
+    val trailId: Long,
+    val startMeters: Double,
+    val endMeters: Double,
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
 @Entity(
     tableName = "trail_stop_observations",
     foreignKeys = [

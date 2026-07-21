@@ -12,6 +12,7 @@ import com.example.flightlog.data.TrailPassEntity
 import com.example.flightlog.data.TrailStopObservationEntity
 import com.example.flightlog.data.TrailPauseZoneEntity
 import com.example.flightlog.data.TrailSectionEntity
+import com.example.flightlog.data.ManualTrailAssignmentEntity
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.EffortInvalidReason
 import com.example.flightlog.domain.PauseZoneState
@@ -30,7 +31,7 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 object TrailAnalysis {
-    const val ANALYSIS_VERSION = 7
+    const val ANALYSIS_VERSION = 8
     const val EFFORT_VERSION = 4
     const val BIN_METERS = 5.0
     private const val MAX_GPS_ACCURACY_METERS = 25f
@@ -42,6 +43,7 @@ object TrailAnalysis {
     private const val PAUSE_CLUSTER_METERS = 20.0
     private const val MAX_CONTINUOUS_ROUTE_GAP_METERS = BIN_METERS * 3.0
     private const val MINIMUM_MATCH_POINTS = 5
+    internal const val MINIMUM_FORWARD_COVERAGE = .95
 
     fun stopEvents(
         rideId: Long,
@@ -292,11 +294,36 @@ object TrailAnalysis {
         val coveredMeters = normalized.maxOf { it.second.distanceMeters } - normalized.minOf { it.second.distanceMeters }
         val canonicalSpan = canonical.maxOf { it.distanceMeters } - canonical.minOf { it.distanceMeters }
         val coverage = coveredMeters / canonicalSpan.coerceAtLeast(1.0)
-        if (coverage < 0.40 && coveredMeters < 300.0) return null
+        if (!hasContinuousForwardCoverage(normalized, canonical.minOf { it.distanceMeters }, canonical.maxOf { it.distanceMeters })) return null
         val meanError = normalized.map { distance(it.first, it.second) }.average()
         val confidence = (progression * 45 + coverage.coerceAtMost(1.0) * 30 +
             (1.0 - meanError / 30.0).coerceIn(0.0, 1.0) * 25).toInt().coerceIn(0, 100)
         return Match(confidence, normalized)
+    }
+
+    /** Strictly require one forward, uninterrupted segment through 95% of the selected trail. */
+    fun hasContinuousForwardCoverage(
+        normalized: List<Pair<SpatialProfileEntity, SpatialProfileEntity>>,
+        startMeters: Double,
+        endMeters: Double,
+    ): Boolean {
+        if (startMeters >= endMeters) return false
+        val span = endMeters - startMeters
+        val segments = mutableListOf<MutableList<Pair<SpatialProfileEntity, SpatialProfileEntity>>>()
+        normalized.sortedBy { it.first.recordedAt }.forEach { pair ->
+            val prior = segments.lastOrNull()?.lastOrNull()
+            // Keep the existing direction tolerance: nearest-bin jitter must not split a run.
+            if (prior == null || pair.second.distanceMeters >= prior.second.distanceMeters - 20.0) {
+                if (segments.isEmpty()) segments.add(mutableListOf())
+                segments.last().add(pair)
+            } else segments.add(mutableListOf(pair))
+        }
+        return segments.any { segment ->
+            val distances = segment.map { it.second.distanceMeters }.filter { it in startMeters..endMeters }.distinct().sorted()
+            distances.size >= 2 &&
+                distances.last() - distances.first() >= span * MINIMUM_FORWARD_COVERAGE &&
+                distances.zipWithNext().all { (a, b) -> b - a <= MAX_CONTINUOUS_ROUTE_GAP_METERS }
+        }
     }
 
     /**
@@ -549,11 +576,12 @@ class RideProcessor(private val database: FlightLogDatabase) {
         val rides = dao.allRides()
         database.withTransaction {
             dao.deletePassesForTrail(trailId)
-            rides.forEach { createMatchedPasses(trail, canonical, it, includeEfforts = false) }
+            val manualByRide = dao.allManualTrailAssignments().associateBy { it.rideId }
+            rides.forEach { createMatchedPasses(trail, canonical, it, manualByRide[it.id], includeEfforts = false) }
             syncPauseZones(trail)
             syncSplitSections(trail)
             dao.deletePassesForTrail(trailId)
-            rides.forEach { createMatchedPasses(trail, canonical, it, includeEfforts = true) }
+            rides.forEach { createMatchedPasses(trail, canonical, it, manualByRide[it.id], includeEfforts = true) }
             dao.updateTrail(trail.copy(supportCount = dao.passes(trailId).map { it.rideId }.distinct().size))
         }
     }
@@ -564,6 +592,10 @@ class RideProcessor(private val database: FlightLogDatabase) {
 
     private suspend fun analyzeTrail(rideId: Long, profiles: List<SpatialProfileEntity>) {
         if (profiles.size < 20) return
+        dao.manualTrailAssignment(rideId)?.let { assignment ->
+            rebuildTrail(assignment.trailId)
+            return
+        }
         val trails = dao.allTrails()
         val matches = mutableListOf<Triple<TrailEntity, List<SpatialProfileEntity>, TrailAnalysis.Match>>()
         trails.forEach { trail ->
@@ -622,10 +654,14 @@ class RideProcessor(private val database: FlightLogDatabase) {
         trail: TrailEntity,
         canonical: List<SpatialProfileEntity>,
         ride: com.example.flightlog.data.RideEntity,
+        manualAssignment: ManualTrailAssignmentEntity?,
         includeEfforts: Boolean,
     ) {
-        val profiles = dao.spatialProfiles(ride.id)
-        val match = if (ride.id == trail.canonicalRideId) {
+        if (manualAssignment != null && manualAssignment.trailId != trail.id) return
+        val profiles = dao.spatialProfiles(ride.id).let { all ->
+            manualAssignment?.let { assignment -> all.filter { it.distanceMeters in assignment.startMeters..assignment.endMeters } } ?: all
+        }
+        val match = if (ride.id == trail.canonicalRideId && manualAssignment == null) {
             TrailAnalysis.Match(100, profiles.map { it to it })
         } else {
             TrailAnalysis.match(profiles, canonical.filter { it.distanceMeters in trail.startMeters..trail.endMeters })

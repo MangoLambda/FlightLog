@@ -37,6 +37,7 @@ interface FlightLogDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPauseZoneIfAbsent(zone: TrailPauseZoneEntity): Long
     @Update suspend fun updatePauseZone(zone: TrailPauseZoneEntity)
     @Insert suspend fun insertPass(pass: TrailPassEntity): Long
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertManualTrailAssignment(assignment: ManualTrailAssignmentEntity)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPassIfAbsent(pass: TrailPassEntity): Long
     @Insert suspend fun insertEfforts(efforts: List<SectionEffortEntity>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertEffortIfAbsent(effort: SectionEffortEntity): Long
@@ -70,11 +71,17 @@ interface FlightLogDao {
     @Query("SELECT * FROM trails WHERE supportCount >= 2 OR state = 'CONFIRMED' ORDER BY updatedAt DESC")
     fun observeVisibleTrails(): Flow<List<TrailEntity>>
 
+    @Query("SELECT * FROM trails ORDER BY name COLLATE NOCASE, id")
+    fun observeAllTrails(): Flow<List<TrailEntity>>
+
     @Query("SELECT * FROM trail_sections ORDER BY trailId, startMeters")
     fun observeSections(): Flow<List<TrailSectionEntity>>
 
     @Query("SELECT * FROM trail_passes ORDER BY startedAt DESC")
     fun observePasses(): Flow<List<TrailPassEntity>>
+
+    @Query("SELECT * FROM manual_trail_assignments ORDER BY updatedAt DESC")
+    fun observeManualTrailAssignments(): Flow<List<ManualTrailAssignmentEntity>>
 
     @Query("SELECT * FROM section_efforts ORDER BY id DESC")
     fun observeEfforts(): Flow<List<SectionEffortEntity>>
@@ -169,6 +176,12 @@ interface FlightLogDao {
     @Query("SELECT * FROM trail_passes ORDER BY startedAt DESC")
     suspend fun allPasses(): List<TrailPassEntity>
 
+    @Query("SELECT * FROM manual_trail_assignments WHERE rideId = :rideId LIMIT 1")
+    suspend fun manualTrailAssignment(rideId: Long): ManualTrailAssignmentEntity?
+
+    @Query("SELECT * FROM manual_trail_assignments")
+    suspend fun allManualTrailAssignments(): List<ManualTrailAssignmentEntity>
+
     @Query("SELECT * FROM trail_passes WHERE uuid = :uuid LIMIT 1")
     suspend fun passByUuid(uuid: String): TrailPassEntity?
 
@@ -222,6 +235,9 @@ interface FlightLogDao {
 
     @Query("DELETE FROM trail_passes WHERE trailId = :trailId")
     suspend fun deletePassesForTrail(trailId: Long)
+
+    @Query("DELETE FROM manual_trail_assignments WHERE rideId = :rideId")
+    suspend fun deleteManualTrailAssignment(rideId: Long)
 
     @Query("DELETE FROM trail_sections WHERE trailId = :trailId AND kind NOT IN ('WHOLE_TRAIL', 'MANUAL')")
     suspend fun deleteAutoSections(trailId: Long)

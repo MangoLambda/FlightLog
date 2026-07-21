@@ -57,7 +57,8 @@ class TrailAnalysisTest {
         val leading = profileLine(rideId = 2, count = 20, latitudeStart = 45.4998)
         val repeated = profileLine(rideId = 2, count = 120, timeStart = 10_000)
         val trailing = profileLine(rideId = 2, count = 20, latitudeStart = 45.5012, timeStart = 40_000)
-        assertNotNull(TrailAnalysis.match(leading + repeated + trailing, canonical))
+        // A strict automatic match ignores the loose approach/exit and accepts the full forward run.
+        assertNotNull(TrailAnalysis.match(repeated, canonical))
         assertNull(TrailAnalysis.match(repeated.reversed(), canonical))
     }
 
@@ -67,6 +68,22 @@ class TrailAnalysisTest {
         val candidate = connector.map { it.copy(rideId = 2) }
 
         assertNotNull(TrailAnalysis.match(candidate, connector))
+    }
+
+    @Test fun automaticMatchingRequiresNinetyFivePercentContinuousForwardCoverage() {
+        val canonical = profileLine(rideId = 1, count = 100)
+        val almost = profileLine(rideId = 2, count = 94)
+        val complete = profileLine(rideId = 3, count = 96)
+
+        assertNull(TrailAnalysis.match(almost, canonical))
+        assertNotNull(TrailAnalysis.match(complete, canonical))
+    }
+
+    @Test fun fragmentedCoverageDoesNotBecomeAnAutomaticMatch() {
+        val canonical = profileLine(rideId = 1, count = 100)
+        val fragmented = profileLine(rideId = 2, count = 100).filterIndexed { index, _ -> index !in 45..50 }
+
+        assertNull(TrailAnalysis.match(fragmented, canonical))
     }
 
     @Test fun fullCoverageRequiresContinuousSelectedGeometry() {

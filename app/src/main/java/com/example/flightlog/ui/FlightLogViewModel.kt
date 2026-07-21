@@ -62,8 +62,10 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     val physicalFeatures = repository.physicalFeatures.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val featureObservations = repository.featureObservations.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val trails = repository.trails.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val assignableTrails = repository.assignableTrails.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val sections = repository.sections.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val passes = repository.passes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val manualTrailAssignments = repository.manualTrailAssignments.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val efforts = repository.efforts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val pauseZones = repository.pauseZones.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val stopObservations = repository.stopObservations.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -214,6 +216,17 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     fun splitFeature(featureId: Long, observationIds: Set<Long>) = viewModelScope.launch { repository.splitFeature(featureId, observationIds) }
 
     suspend fun trailProfiles(rideId: Long) = repository.spatialProfiles(rideId)
+
+    fun assignRideToTrail(rideId: Long, trailId: Long, startMeters: Double, endMeters: Double) = viewModelScope.launch {
+        repository.assignRideToTrail(rideId, trailId, startMeters, endMeters)
+        app.rideProcessor.rebuildTrail(trailId)
+    }
+
+    fun clearRideTrailAssignment(rideId: Long) = viewModelScope.launch {
+        val previous = repository.manualTrailAssignment(rideId)?.trailId
+        repository.clearRideTrailAssignment(rideId)
+        if (previous != null) app.rideProcessor.rebuildTrail(previous)
+    }
 
     suspend fun previewTrailDefinition(draft: TrailDefinitionDraft): TrailEditImpact =
         repository.previewTrailDefinition(draft)
