@@ -6,6 +6,8 @@ import com.example.flightlog.data.RideRepository
 import com.example.flightlog.maps.MapTileCache
 import com.example.flightlog.tracking.RideProcessingWorker
 import com.example.flightlog.tracking.RideProcessor
+import com.example.flightlog.tracking.TrailAnalysis
+import com.example.flightlog.tracking.TrailMatchingOptionsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,6 +22,7 @@ class FlightLogApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        TrailAnalysis.matchingOptions = TrailMatchingOptionsStore.read(this)
         MapLibre.getInstance(this)
         MapTileCache.configure(this)
         applicationScope.launch {

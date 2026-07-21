@@ -101,6 +101,7 @@ import com.example.flightlog.tracking.GpsStatus
 import com.example.flightlog.tracking.RideMath
 import com.example.flightlog.tracking.RideTrackingService
 import com.example.flightlog.tracking.RecordingSettings
+import com.example.flightlog.tracking.TrailMatchingOptions
 import com.example.flightlog.ui.AppScreen
 import com.example.flightlog.ui.FlightLogViewModel
 import com.example.flightlog.ui.TrailBoundaryEditor
@@ -191,6 +192,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val selectedStops by vm.selectedRideStops.collectAsStateWithLifecycle()
     val imperial by vm.imperial.collectAsStateWithLifecycle()
     val recordingSettings by vm.recordingSettings.collectAsStateWithLifecycle()
+    val trailMatchingOptions by vm.trailMatchingOptions.collectAsStateWithLifecycle()
     val userMapApiKey by vm.userMapApiKey.collectAsStateWithLifecycle()
     val effectiveMapApiKey by vm.effectiveMapApiKey.collectAsStateWithLifecycle()
     val mapStyle by vm.mapStyle.collectAsStateWithLifecycle()
@@ -298,9 +300,11 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                 SettingsScreen(
                     imperial = imperial,
                     recordingSettings = recordingSettings,
+                    trailMatchingOptions = trailMatchingOptions,
                     onImperial = vm::setImperial,
                     onMountingMode = vm::setMountingMode,
                     onMinimumJumpHeight = vm::setMinimumJumpHeight,
+                    onTrailMatchingOptions = vm::setTrailMatchingOptions,
                     savedMapApiKey = userMapApiKey,
                     hasBundledMapApiKey = vm.hasBundledMapApiKey,
                     onSaveMapApiKey = vm::saveThunderforestApiKey,
@@ -396,9 +400,11 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                     AppScreen.SETTINGS -> SettingsScreen(
                         imperial = imperial,
                         recordingSettings = recordingSettings,
+                        trailMatchingOptions = trailMatchingOptions,
                         onImperial = vm::setImperial,
                         onMountingMode = vm::setMountingMode,
                         onMinimumJumpHeight = vm::setMinimumJumpHeight,
+                        onTrailMatchingOptions = vm::setTrailMatchingOptions,
                         savedMapApiKey = userMapApiKey,
                         hasBundledMapApiKey = vm.hasBundledMapApiKey,
                         onSaveMapApiKey = vm::saveThunderforestApiKey,
@@ -2479,9 +2485,11 @@ private fun StatsScreen(rides: List<RideEntity>, jumps: List<JumpEventEntity>, i
 private fun SettingsScreen(
     imperial: Boolean,
     recordingSettings: RecordingSettings,
+    trailMatchingOptions: TrailMatchingOptions,
     onImperial: (Boolean) -> Unit,
     onMountingMode: (MountingMode) -> Unit,
     onMinimumJumpHeight: (MountingMode, Float) -> Unit,
+    onTrailMatchingOptions: (TrailMatchingOptions) -> Unit,
     savedMapApiKey: String,
     hasBundledMapApiKey: Boolean,
     onSaveMapApiKey: (String) -> Boolean,
@@ -2505,6 +2513,8 @@ private fun SettingsScreen(
     onExportBackup: () -> Unit = {},
     onImportBackup: () -> Unit = {},
 ) {
+    var showTrailMatching by rememberSaveable { mutableStateOf(false) }
+    if (showTrailMatching) AdvancedTrailMatchingDialog(trailMatchingOptions, { showTrailMatching = false }, onTrailMatchingOptions)
     val listState = rememberLazyListState()
     LaunchedEffect(Unit) { onRefreshTileCache() }
     LaunchedEffect(focusMapProvider) {
@@ -2549,6 +2559,16 @@ private fun SettingsScreen(
                     )
                     Text("Lower values detect smaller hops but may create more false positives. All detected jumps still require review.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            }
+        }
+        item {
+            Card(onClick = { showTrailMatching = true }) {
+                ListItem(
+                    headlineContent = { Text("Advanced trail matching options") },
+                    supportingContent = { Text("Tune coverage, corridor, direction, continuity, and sample requirements") },
+                    leadingContent = { Icon(Icons.Default.Tune, null, tint = TrailCyan) },
+                    trailingContent = { Icon(Icons.Default.ArrowForward, null) },
+                )
             }
         }
         item {
@@ -2649,6 +2669,33 @@ private fun SettingsScreen(
         item { Text("Maps", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         item { Text("Thunderforest OpenCycleMap or Clean terrain is used when an API key and network tiles are available. Cached tiles may appear offline; route recording always continues over the fallback canvas.") }
     }
+}
+
+@Composable
+private fun AdvancedTrailMatchingDialog(
+    initial: TrailMatchingOptions,
+    onDismiss: () -> Unit,
+    onApply: (TrailMatchingOptions) -> Unit,
+) {
+    var value by rememberSaveable(initial) { mutableStateOf(initial) }
+    @Composable fun slider(label: String, current: Int, range: ClosedFloatingPointRange<Float>, onValue: (Int) -> Unit) {
+        Text("$label: $current", fontWeight = FontWeight.Bold)
+        Slider(value = current.toFloat(), onValueChange = { onValue(it.roundToInt()) }, valueRange = range)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Advanced trail matching") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Lower thresholds find more trails but can create false matches. Applying rebuilds all trail results.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            slider("Continuous coverage (%)", value.coveragePercent, 50f..100f) { value = value.copy(coveragePercent = it) }
+            slider("GPS corridor (m)", value.corridorMeters, 5f..80f) { value = value.copy(corridorMeters = it) }
+            slider("Forward progress (%)", value.forwardProgressPercent, 50f..100f) { value = value.copy(forwardProgressPercent = it) }
+            slider("Maximum continuity gap (m)", value.continuityGapMeters, 5f..100f) { value = value.copy(continuityGapMeters = it) }
+            slider("Minimum matched samples", value.minimumPoints, 3f..30f) { value = value.copy(minimumPoints = it) }
+        } },
+        confirmButton = { Button(onClick = { onApply(value); onDismiss() }) { Text("Apply and rebuild") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

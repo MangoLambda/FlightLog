@@ -41,9 +41,7 @@ object TrailAnalysis {
     internal const val MAX_BRIDGEABLE_GAP_MILLIS = 15_000L
     private const val MAX_BRIDGED_SPEED_MPS = 30.0
     private const val PAUSE_CLUSTER_METERS = 20.0
-    private const val MAX_CONTINUOUS_ROUTE_GAP_METERS = BIN_METERS * 3.0
-    private const val MINIMUM_MATCH_POINTS = 5
-    internal const val MINIMUM_FORWARD_COVERAGE = .95
+    @Volatile var matchingOptions = TrailMatchingOptions()
 
     fun stopEvents(
         rideId: Long,
@@ -279,18 +277,19 @@ object TrailAnalysis {
     }
 
     fun match(candidate: List<SpatialProfileEntity>, canonical: List<SpatialProfileEntity>): Match? {
-        if (candidate.size < MINIMUM_MATCH_POINTS || canonical.size < MINIMUM_MATCH_POINTS) return null
+        val options = matchingOptions
+        if (candidate.size < options.minimumPoints || canonical.size < options.minimumPoints) return null
         val normalized = candidate.mapNotNull { point ->
             canonical.minByOrNull { distance(point, it) }?.let { nearest ->
                 val separation = distance(point, nearest)
-                val corridor = maxOf(15.0, point.accuracyMeters * 2.0, nearest.accuracyMeters * 2.0)
+                val corridor = maxOf(options.corridorMeters.toDouble(), point.accuracyMeters * 2.0, nearest.accuracyMeters * 2.0)
                 if (separation <= corridor) point to nearest else null
             }
         }
-        if (normalized.size < MINIMUM_MATCH_POINTS) return null
+        if (normalized.size < options.minimumPoints) return null
         val progression = normalized.zipWithNext().count { (a, b) -> b.second.distanceMeters >= a.second.distanceMeters - 2.0 }
             .toDouble() / (normalized.size - 1)
-        if (progression < 0.80) return null
+        if (progression < options.forwardProgressPercent / 100.0) return null
         val coveredMeters = normalized.maxOf { it.second.distanceMeters } - normalized.minOf { it.second.distanceMeters }
         val canonicalSpan = canonical.maxOf { it.distanceMeters } - canonical.minOf { it.distanceMeters }
         val coverage = coveredMeters / canonicalSpan.coerceAtLeast(1.0)
@@ -321,8 +320,8 @@ object TrailAnalysis {
         return segments.any { segment ->
             val distances = segment.map { it.second.distanceMeters }.filter { it in startMeters..endMeters }.distinct().sorted()
             distances.size >= 2 &&
-                distances.last() - distances.first() >= span * MINIMUM_FORWARD_COVERAGE &&
-                distances.zipWithNext().all { (a, b) -> b - a <= MAX_CONTINUOUS_ROUTE_GAP_METERS }
+                distances.last() - distances.first() >= span * (matchingOptions.coveragePercent / 100.0) &&
+                distances.zipWithNext().all { (a, b) -> b - a <= matchingOptions.continuityGapMeters }
         }
     }
 
@@ -359,7 +358,7 @@ object TrailAnalysis {
             covered.isNotEmpty() &&
                 covered.first() <= startMeters + BIN_METERS &&
                 covered.last() >= endMeters - BIN_METERS &&
-                covered.zipWithNext().all { (a, b) -> b - a <= MAX_CONTINUOUS_ROUTE_GAP_METERS }
+                covered.zipWithNext().all { (a, b) -> b - a <= matchingOptions.continuityGapMeters }
         }
     }
 

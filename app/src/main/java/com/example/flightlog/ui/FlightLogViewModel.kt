@@ -29,6 +29,8 @@ import com.example.flightlog.maps.MapTileCache
 import com.example.flightlog.tracking.RecordingSettingsStore
 import com.example.flightlog.tracking.TrackingState
 import com.example.flightlog.tracking.TrailAnalysis
+import com.example.flightlog.tracking.TrailMatchingOptions
+import com.example.flightlog.tracking.TrailMatchingOptionsStore
 import com.example.flightlog.tracking.MotionTelemetry
 import com.example.flightlog.update.AppUpdateManager
 import com.example.flightlog.update.UpdateRelease
@@ -88,6 +90,7 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
         application.getSharedPreferences("settings", 0).getBoolean("imperial", false),
     )
     val recordingSettings = MutableStateFlow(RecordingSettingsStore.read(application))
+    val trailMatchingOptions = MutableStateFlow(TrailMatchingOptionsStore.read(application))
     val userMapApiKey = MutableStateFlow(MapApiKeyStore.userKey(application))
     val effectiveMapApiKey = MutableStateFlow(MapApiKeyStore.effectiveKey(application))
     val mapStyle = MutableStateFlow(MapStyleStore.read(application))
@@ -333,6 +336,12 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
             MountingMode.POCKET -> recordingSettings.value.copy(pocketMinimumHeightMeters = meters)
             MountingMode.BIKE_MOUNTED -> recordingSettings.value.copy(mountedMinimumHeightMeters = meters)
         }
+    }
+    fun setTrailMatchingOptions(options: TrailMatchingOptions) = viewModelScope.launch {
+        TrailMatchingOptionsStore.save(getApplication(), options)
+        TrailAnalysis.matchingOptions = options
+        trailMatchingOptions.value = options
+        app.rideProcessor.rebuildAllTrails()
     }
 
     fun saveThunderforestApiKey(key: String): Boolean {
