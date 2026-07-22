@@ -321,7 +321,10 @@ object TrailAnalysis {
             val distances = segment.map { it.second.distanceMeters }.filter { it in startMeters..endMeters }.distinct().sorted()
             distances.size >= 2 &&
                 distances.last() - distances.first() >= span * (matchingOptions.coveragePercent / 100.0) &&
-                distances.zipWithNext().all { (a, b) -> b - a <= matchingOptions.continuityGapMeters }
+                segment.zipWithNext().all { (a, b) ->
+                    b.second.distanceMeters !in startMeters..endMeters ||
+                        isAcceptableContinuityGap(a, b)
+                }
         }
     }
 
@@ -358,8 +361,32 @@ object TrailAnalysis {
             covered.isNotEmpty() &&
                 covered.first() <= startMeters + BIN_METERS &&
                 covered.last() >= endMeters - BIN_METERS &&
-                covered.zipWithNext().all { (a, b) -> b - a <= matchingOptions.continuityGapMeters }
+                segment.zipWithNext().all { (a, b) ->
+                    b.second.distanceMeters !in (startMeters - BIN_METERS)..(endMeters + BIN_METERS) ||
+                        isAcceptableContinuityGap(a, b, rejectLongRawGap = false)
+                }
         }
+    }
+
+    /**
+     * A profile may be farther apart than one 5 m bin when GPS samples are sparse.
+     * Use the observed sample interval and speed to distinguish that from an
+     * unobserved section of the route. Long raw gaps remain discontinuities.
+     */
+    private fun isAcceptableContinuityGap(
+        previous: Pair<SpatialProfileEntity, SpatialProfileEntity>,
+        current: Pair<SpatialProfileEntity, SpatialProfileEntity>,
+        rejectLongRawGap: Boolean = true,
+    ): Boolean {
+        val canonicalGap = current.second.distanceMeters - previous.second.distanceMeters
+        val sampleGapMillis = current.first.maximumSampleGapMillis
+        if (rejectLongRawGap && sampleGapMillis > GPS_SAMPLE_GAP_MILLIS) return false
+        if (canonicalGap <= matchingOptions.continuityGapMeters) return true
+        if (sampleGapMillis <= 0L) return false
+        val observedSpeed = maxOf(previous.first.speedMps, current.first.speedMps, 0.0)
+        val speedAllowance = observedSpeed * sampleGapMillis / 1_000.0 * 2.0
+        val accuracyAllowance = maxOf(previous.first.accuracyMeters, current.first.accuracyMeters).toDouble()
+        return canonicalGap <= maxOf(matchingOptions.continuityGapMeters.toDouble(), speedAllowance + accuracyAllowance)
     }
 
     fun suggestedSections(trailId: Long, canonical: List<SpatialProfileEntity>): List<TrailSectionEntity> {

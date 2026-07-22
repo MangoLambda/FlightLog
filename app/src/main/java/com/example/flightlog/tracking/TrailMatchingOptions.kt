@@ -6,7 +6,7 @@ data class TrailMatchingOptions(
     val coveragePercent: Int = 95,
     val corridorMeters: Int = 15,
     val forwardProgressPercent: Int = 80,
-    val continuityGapMeters: Int = 15,
+    val continuityGapMeters: Int = 30,
     val minimumPoints: Int = 5,
 )
 

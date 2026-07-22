@@ -86,6 +86,22 @@ class TrailAnalysisTest {
         assertNull(TrailAnalysis.match(fragmented, canonical))
     }
 
+    @Test fun sparseGpsSamplesCanMatchWhenTheirObservedIntervalsAreContinuous() {
+        val canonical = profileLine(rideId = 1, count = 100)
+        val sparse = canonical.filterIndexed { index, _ -> index % 4 == 0 }
+            .map { it.copy(rideId = 2, maximumSampleGapMillis = 1_000) }
+
+        assertNotNull(TrailAnalysis.match(sparse, canonical))
+    }
+
+    @Test fun longUnobservedGpsGapStillBreaksAutomaticMatching() {
+        val canonical = profileLine(rideId = 1, count = 100)
+        val sparse = canonical.filterIndexed { index, _ -> index % 4 == 0 }
+            .map { it.copy(rideId = 2, maximumSampleGapMillis = 16_000) }
+
+        assertNull(TrailAnalysis.match(sparse, canonical))
+    }
+
     @Test fun fullCoverageRequiresContinuousSelectedGeometry() {
         val canonical = profileLine(rideId = 1, count = 80)
         val complete = profileLine(rideId = 2, count = 80).zip(canonical)
