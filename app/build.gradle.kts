@@ -37,8 +37,8 @@ android {
         applicationId = "com.example.flightlog"
         minSdk = 29
         targetSdk = 36
-        versionCode = 57
-        versionName = "1.1.49"
+        versionCode = 58
+        versionName = "1.1.50"
 
         buildConfigField("String", "THUNDERFOREST_API_KEY", "\"$thunderforestApiKey\"")
         buildConfigField("String", "FLIGHTLOG_UPDATE_BASE_URL", "\"$flightLogUpdateBaseUrl\"")

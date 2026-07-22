@@ -999,10 +999,8 @@ internal fun HistoryScreen(
                                 fontWeight = FontWeight.Bold,
                             )
                             Text(formatDate(ride.startedAt), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("${formatDistance(ride.distanceMeters, imperial)} • ${formatDuration(ride.movingTimeMillis)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(
-                                "About ${formatDataSize(rideStorageBytes[ride.id] ?: 0L)} saved",
-                                style = MaterialTheme.typography.labelMedium,
+                                "${formatDistance(ride.distanceMeters, imperial)} • ${formatDuration(ride.movingTimeMillis)} • ${formatDataSizeMb(rideStorageBytes[ride.id] ?: 0L)}",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -2971,6 +2969,12 @@ internal fun formatDataSize(bytes: Long): String {
         else -> String.format(Locale.US, "%.2f GB", safeBytes / gibibyte)
     }
 }
+
+private fun formatDataSizeMb(bytes: Long): String = String.format(
+    Locale.US,
+    "%.1f MB",
+    bytes.coerceAtLeast(0) / (1_024.0 * 1_024.0),
+)
 
 private fun formatDate(timestamp: Long): String = DateTimeFormatter.ofPattern("EEE, MMM d • h:mm a")
     .format(Instant.ofEpochMilli(timestamp).atZone(ZoneId.systemDefault()))
