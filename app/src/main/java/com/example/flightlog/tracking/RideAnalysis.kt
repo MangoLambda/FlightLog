@@ -608,7 +608,11 @@ class RideProcessor(private val database: FlightLogDatabase) {
             syncSplitSections(trail)
             dao.deletePassesForTrail(trailId)
             rides.forEach { createMatchedPasses(trail, canonical, it, manualByRide[it.id], includeEfforts = true) }
-            dao.updateTrail(trail.copy(supportCount = dao.passes(trailId).map { it.rideId }.distinct().size))
+            // Re-read the row before updating the derived count. Trail edits can be
+            // saved immediately before this rebuild, so writing the snapshot loaded
+            // above could restore an older user-editable name or boundaries.
+            val currentTrail = dao.allTrails().firstOrNull { it.id == trailId } ?: return@withTransaction
+            dao.updateTrail(currentTrail.copy(supportCount = dao.passes(trailId).map { it.rideId }.distinct().size))
         }
     }
 
