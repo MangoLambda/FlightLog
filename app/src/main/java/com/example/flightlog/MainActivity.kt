@@ -198,6 +198,9 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val mapStyle by vm.mapStyle.collectAsStateWithLifecycle()
     val tileCacheState by vm.tileCacheState.collectAsStateWithLifecycle()
     val updateState by vm.updateState.collectAsStateWithLifecycle()
+    val trailNamesByRide = remember(manualTrailAssignments, passes, assignableTrails) {
+        primaryTrailNames(manualTrailAssignments, passes, assignableTrails)
+    }
     var pendingRideStart by remember { mutableStateOf(false) }
     var focusMapProvider by remember { mutableStateOf(false) }
     var showActiveMapSettings by remember { mutableStateOf(false) }
@@ -386,6 +389,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
                     AppScreen.HISTORY -> HistoryScreen(
                         rides = rides,
                         imperial = imperial,
+                        trailNames = trailNamesByRide,
                         rideStorageBytes = rideStorageBytes,
                         onRide = vm::openRide,
                         onPreviewDelete = vm::previewBulkRideDeletion,
@@ -860,6 +864,7 @@ internal fun HistoryScreen(
     onRide: (Long) -> Unit,
     onPreviewDelete: suspend (Set<Long>) -> BulkRideDeletePreview,
     onDelete: suspend (BulkRideDeletePreview) -> BulkRideDeleteResult,
+    trailNames: Map<Long, String> = emptyMap(),
 ) {
     val scope = rememberCoroutineScope()
     val eligibleRideIds = remember(rides) {
@@ -988,7 +993,12 @@ internal fun HistoryScreen(
                         Icon(Icons.Default.Route, null, tint = TrailCyan, modifier = Modifier.size(36.dp))
                         Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(formatDate(ride.startedAt), fontWeight = FontWeight.Bold)
+                            Text(
+                                trailNames[ride.id] ?: "Unassigned",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(formatDate(ride.startedAt), color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text("${formatDistance(ride.distanceMeters, imperial)} • ${formatDuration(ride.movingTimeMillis)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(
                                 "About ${formatDataSize(rideStorageBytes[ride.id] ?: 0L)} saved",

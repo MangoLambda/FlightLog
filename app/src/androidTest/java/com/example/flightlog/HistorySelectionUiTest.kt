@@ -100,6 +100,24 @@ class HistorySelectionUiTest {
         composeRule.onNodeWithText("About 2.0 KB saved").assertIsDisplayed()
     }
 
+    @Test fun trailNameIsDisplayedBeforeTheRideDate() {
+        composeRule.setContent {
+            FlightLogTheme {
+                HistoryScreen(
+                    rides = listOf(ride(1)),
+                    imperial = false,
+                    trailNames = mapOf(1L to "Cedar Loop"),
+                    onRide = {},
+                    onPreviewDelete = { ids -> BulkRideDeletePreview(ids, emptyList(), emptyList(), emptySet()) },
+                    onDelete = { BulkRideDeleteResult(1, 0, 0) },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Cedar Loop").assertIsDisplayed()
+        composeRule.onNodeWithText("Thu, Jan 1 • 12:00 AM").assertIsDisplayed()
+    }
+
     private fun ride(id: Long) = RideEntity(
         id = id,
         startedAt = id * 1_000,

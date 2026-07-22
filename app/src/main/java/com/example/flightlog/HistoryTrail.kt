@@ -1,0 +1,36 @@
+package com.example.flightlog
+
+import com.example.flightlog.data.ManualTrailAssignmentEntity
+import com.example.flightlog.data.TrailEntity
+import com.example.flightlog.data.TrailPassEntity
+
+/** Returns the trail label to use as the primary heading for each ride. */
+internal fun primaryTrailNames(
+    manualAssignments: List<ManualTrailAssignmentEntity>,
+    passes: List<TrailPassEntity>,
+    trails: List<TrailEntity>,
+): Map<Long, String> {
+    val trailNames = trails.associate { it.id to it.name }
+    val manualByRide = manualAssignments
+        .asSequence()
+        .filter { it.trailId in trailNames }
+        .sortedWith(compareByDescending<ManualTrailAssignmentEntity> { it.updatedAt }.thenBy { it.trailId })
+        .associateBy { it.rideId }
+
+    val automaticByRide = passes
+        .asSequence()
+        .filter { it.completeCoverage && it.trailId in trailNames }
+        .groupBy { it.rideId }
+        .mapValues { (_, ridePasses) ->
+            ridePasses.minWithOrNull(
+                compareByDescending<TrailPassEntity> { it.matchConfidence }
+                    .thenBy { it.trailId }
+                    .thenBy { it.id },
+            )!!
+        }
+
+    return (manualByRide.keys + automaticByRide.keys).associateWith { rideId ->
+        val trailId = manualByRide[rideId]?.trailId ?: automaticByRide[rideId]?.trailId
+        trailNames[trailId]!!
+    }
+}
