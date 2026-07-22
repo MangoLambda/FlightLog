@@ -3,6 +3,7 @@ package com.example.flightlog
 import com.example.flightlog.data.ManualTrailAssignmentEntity
 import com.example.flightlog.data.TrailEntity
 import com.example.flightlog.data.TrailPassEntity
+import com.example.flightlog.domain.TrailState
 
 /** Returns the trail label to use as the primary heading for each ride. */
 internal fun primaryTrailNames(
@@ -10,7 +11,8 @@ internal fun primaryTrailNames(
     passes: List<TrailPassEntity>,
     trails: List<TrailEntity>,
 ): Map<Long, String> {
-    val trailNames = trails.associate { it.id to it.name }
+    val trailsById = trails.associateBy { it.id }
+    val trailNames = trailsById.mapValues { it.value.name }
     val manualByRide = manualAssignments
         .asSequence()
         .filter { it.trailId in trailNames }
@@ -23,7 +25,8 @@ internal fun primaryTrailNames(
         .groupBy { it.rideId }
         .mapValues { (_, ridePasses) ->
             ridePasses.minWithOrNull(
-                compareByDescending<TrailPassEntity> { it.matchConfidence }
+                compareByDescending<TrailPassEntity> { trailsById[it.trailId]?.state == TrailState.CONFIRMED }
+                    .thenByDescending { it.matchConfidence }
                     .thenBy { it.trailId }
                     .thenBy { it.id },
             )!!

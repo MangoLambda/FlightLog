@@ -5,6 +5,7 @@ import org.junit.Test
 import com.example.flightlog.data.ManualTrailAssignmentEntity
 import com.example.flightlog.data.TrailEntity
 import com.example.flightlog.data.TrailPassEntity
+import com.example.flightlog.domain.TrailState
 
 class HistorySelectionTest {
     @Test fun tappingARideTogglesOnlyThatRide() {
@@ -50,11 +51,23 @@ class HistorySelectionTest {
         assertEquals("First", result[10L])
     }
 
+    @Test fun confirmedTrailBeatsHigherConfidenceGeneratedTrail() {
+        val result = primaryTrailNames(
+            emptyList(),
+            listOf(pass(10, 1, confidence = 70, complete = true), pass(10, 2, confidence = 95, complete = true)),
+            listOf(trail(1, "Renamed trail", TrailState.CONFIRMED), trail(2, "Trail near 10", TrailState.CANDIDATE)),
+        )
+
+        assertEquals("Renamed trail", result[10L])
+    }
+
     @Test fun ridesWithoutAQualifyingTrailAreUnassignedByTheUi() {
         assertEquals(emptyMap<Long, String>(), primaryTrailNames(emptyList(), emptyList(), emptyList()))
     }
 
-    private fun trail(id: Long, name: String) = TrailEntity(id = id, name = name, canonicalRideId = 1, lengthMeters = 100.0)
+    private fun trail(id: Long, name: String, state: TrailState = TrailState.CANDIDATE) = TrailEntity(
+        id = id, name = name, state = state, canonicalRideId = 1, lengthMeters = 100.0,
+    )
 
     private fun pass(rideId: Long, trailId: Long, confidence: Int, complete: Boolean, id: Long = 0) = TrailPassEntity(
         id = id, trailId = trailId, rideId = rideId, startedAt = 1, endedAt = 2,
