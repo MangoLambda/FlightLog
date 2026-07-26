@@ -137,6 +137,7 @@ import com.example.flightlog.ui.theme.Amber
 import com.example.flightlog.ui.theme.FlightLogTheme
 import com.example.flightlog.ui.theme.Lime
 import com.example.flightlog.ui.theme.TrailCyan
+import com.example.flightlog.ui.RiderPosition
 import com.example.flightlog.bikepark.ParkEditorActivity
 import com.example.flightlog.bikepark.ParkDayState
 import com.example.flightlog.data.BikeParkEntity
@@ -775,6 +776,9 @@ private fun ParkDayScreen(
                     modifier = Modifier.fillMaxSize(),
                     onConfigureMap = onConfigureMap,
                     showRider = true,
+                    riderPosition = live.latestLocation?.let {
+                        RiderPosition(it.latitude, it.longitude, it.bearingDegrees)
+                    },
                 )
             }
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -797,7 +801,11 @@ private fun ParkDayScreen(
                     }
                 }
                 Text(
-                    live.gpsMessage ?: "GPS stays active between runs",
+                    live.gpsMessage ?: if (live.parkDayState == ParkDayState.WAITING_FOR_SUMMIT) {
+                        "Low-power GPS and sensors active"
+                    } else {
+                        "High-accuracy GPS and sensors active"
+                    },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

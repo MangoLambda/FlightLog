@@ -133,6 +133,12 @@ private class BoundaryDragState {
     var lastPointTimestamp: Long? = null
 }
 
+data class RiderPosition(
+    val latitude: Double,
+    val longitude: Double,
+    val bearingDegrees: Float?,
+)
+
 @Composable
 fun TrailMap(
     points: List<TrackPointEntity>,
@@ -142,6 +148,7 @@ fun TrailMap(
     modifier: Modifier = Modifier,
     onConfigureMap: (() -> Unit)? = null,
     showRider: Boolean = false,
+    riderPosition: RiderPosition? = null,
     fitRoute: Boolean = false,
     comparisonPoints: List<TrackPointEntity> = emptyList(),
     highlightedPoints: List<TrackPointEntity> = emptyList(),
@@ -187,7 +194,7 @@ fun TrailMap(
         if (showRider) {
             followingRider = true
             updateMap(
-                map, points, jumps, showRider = true, fitRoute = false,
+                map, points, jumps, showRider = true, riderPosition = riderPosition, fitRoute = false,
                 routePaddingPixels = routePaddingPixels, moveCamera = true,
                 comparisonPoints = comparisonPoints, highlightedPoints = highlightedPoints,
                 stopPoints = stopPoints,
@@ -207,7 +214,7 @@ fun TrailMap(
         readyMap.setStyle(Style.Builder().fromJson(provider.styleJson())) { style ->
             addRideLayers(style, context)
             updateMap(
-                readyMap, points, jumps, showRider, fitRoute, routePaddingPixels,
+                readyMap, points, jumps, showRider, riderPosition, fitRoute, routePaddingPixels,
                 moveCamera = showRider || fitRoute || points.size < 2,
                 comparisonPoints = comparisonPoints, highlightedPoints = highlightedPoints,
                 stopPoints = stopPoints,
@@ -223,7 +230,7 @@ fun TrailMap(
     LaunchedEffect(map, fitRoute, routeFitKey) {
         if (fitRoute && points.size >= 2) {
             updateMap(
-                map, points, jumps, showRider, fitRoute = true,
+                map, points, jumps, showRider, riderPosition, fitRoute = true,
                 routePaddingPixels = routePaddingPixels, moveCamera = false,
                 comparisonPoints = comparisonPoints, highlightedPoints = highlightedPoints,
                 stopPoints = stopPoints,
@@ -340,7 +347,7 @@ fun TrailMap(
             },
             update = {
                 updateMap(
-                    map, points, jumps, showRider, fitRoute = false,
+                    map, points, jumps, showRider, riderPosition, fitRoute = false,
                     routePaddingPixels = routePaddingPixels,
                     moveCamera = followingRider, comparisonPoints = comparisonPoints,
                     highlightedPoints = highlightedPoints, stopPoints = stopPoints,
@@ -362,7 +369,7 @@ fun TrailMap(
                 onClick = {
                     followingRider = true
                     updateMap(
-                        map, points, jumps, showRider = true, fitRoute = false,
+                        map, points, jumps, showRider = true, riderPosition = riderPosition, fitRoute = false,
                         routePaddingPixels = routePaddingPixels, moveCamera = true,
                         comparisonPoints = comparisonPoints, highlightedPoints = highlightedPoints,
                         stopPoints = stopPoints,
@@ -697,6 +704,7 @@ private fun updateMap(
     points: List<TrackPointEntity>,
     jumps: List<JumpEventEntity>,
     showRider: Boolean,
+    riderPosition: RiderPosition?,
     fitRoute: Boolean,
     routePaddingPixels: Int,
     moveCamera: Boolean,
@@ -807,7 +815,11 @@ private fun updateMap(
             }
         }
         style.getSourceAs<GeoJsonSource>(SPLIT_LABEL_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(labelFeatures))
-        val rider = points.lastOrNull().takeIf { showRider }
+        val rider = (
+            riderPosition ?: points.lastOrNull()?.let {
+                RiderPosition(it.latitude, it.longitude, it.bearingDegrees)
+            }
+        ).takeIf { showRider }
         val riderFeatures = rider?.let {
             arrayOf(Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)).apply {
                 addNumberProperty("bearing", it.bearingDegrees ?: 0f)
@@ -829,11 +841,16 @@ private fun updateMap(
                 bounds,
                 intArrayOf(routePaddingPixels, routePaddingPixels, routePaddingPixels, routePaddingPixels),
             )?.let { readyMap.cameraPosition = it }
-        } else if ((moveCamera || points.size == 2) && points.isNotEmpty()) {
+        } else if (moveCamera && rider != null) {
+            readyMap.cameraPosition = CameraPosition.Builder()
+                .target(LatLng(rider.latitude, rider.longitude))
+                .zoom(if (showRider) RIDER_ZOOM else 15.0)
+                .build()
+        } else if (points.size == 2) {
             val last = points.last()
             readyMap.cameraPosition = CameraPosition.Builder()
                 .target(LatLng(last.latitude, last.longitude))
-                .zoom(if (showRider) RIDER_ZOOM else 15.0)
+                .zoom(15.0)
                 .build()
         }
     }

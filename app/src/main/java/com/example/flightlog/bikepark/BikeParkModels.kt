@@ -14,6 +14,14 @@ enum class ParkDayState {
     WAITING_FOR_SUMMIT,
 }
 
+enum class ParkSamplingProfile { LOW_POWER, NORMAL }
+
+fun ParkDayState.samplingProfile(): ParkSamplingProfile = when (this) {
+    ParkDayState.WAITING_FOR_SUMMIT, ParkDayState.INACTIVE -> ParkSamplingProfile.LOW_POWER
+    ParkDayState.WAITING_IN_SUMMIT, ParkDayState.PENDING_START, ParkDayState.RECORDING_RUN ->
+        ParkSamplingProfile.NORMAL
+}
+
 data class GeoPoint(val latitude: Double, val longitude: Double)
 
 data class ParkZoneDraft(

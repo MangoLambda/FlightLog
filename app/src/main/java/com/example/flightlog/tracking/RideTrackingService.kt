@@ -47,7 +47,9 @@ import kotlin.math.max
 import com.example.flightlog.bikepark.GeoPoint
 import com.example.flightlog.bikepark.ParkDayState
 import com.example.flightlog.bikepark.ParkGeometry
+import com.example.flightlog.bikepark.ParkSamplingProfile
 import com.example.flightlog.bikepark.ParkZoneType
+import com.example.flightlog.bikepark.samplingProfile
 import com.example.flightlog.data.ParkZoneEntity
 
 class RideTrackingService : Service(), SensorEventListener {
@@ -65,6 +67,7 @@ class RideTrackingService : Service(), SensorEventListener {
     private var detectedFlightSeconds = 0.0
     private var stoppingNormally = false
     private var sensorsRegistered = false
+    private var parkSamplingProfile: ParkSamplingProfile? = null
     private lateinit var recordingSettings: RecordingSettings
     private var gpsStatus = GpsStatus.ACQUIRING
     private var gpsMessage: String? = null
@@ -217,7 +220,18 @@ class RideTrackingService : Service(), SensorEventListener {
         registerSensors()
     }
 
-    private fun startLocationSampling() {
+    private fun applyParkSamplingProfile(force: Boolean = false) {
+        val profile = parkDayState.samplingProfile()
+        if (!force && parkSamplingProfile == profile) return
+        parkSamplingProfile = profile
+        startLocationSampling(profile)
+        registerSensors(
+            if (profile == ParkSamplingProfile.LOW_POWER) SensorManager.SENSOR_DELAY_NORMAL
+            else SensorSamplingProfile.MOTION_PERIOD_US,
+        )
+    }
+
+    private fun startLocationSampling(profile: ParkSamplingProfile) {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             gpsStatus = GpsStatus.PERMISSION_DENIED
             gpsMessage = "Precise location permission required"
@@ -226,17 +240,28 @@ class RideTrackingService : Service(), SensorEventListener {
         }
         gpsStatus = GpsStatus.ACQUIRING
         gpsMessage = null
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 500L)
-            .setMinUpdateIntervalMillis(250L)
-            .setMaxUpdateDelayMillis(1_000L)
-            .setMinUpdateDistanceMeters(1f)
-            .build()
-        locationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
-            .addOnFailureListener { error ->
-                gpsStatus = GpsStatus.ERROR
-                gpsMessage = error.message?.take(100) ?: "Could not start GPS"
-                publishState()
-            }
+        val request = when (profile) {
+            ParkSamplingProfile.LOW_POWER ->
+                LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, PARK_LOW_POWER_INTERVAL_MILLIS)
+                    .setMinUpdateIntervalMillis(PARK_LOW_POWER_INTERVAL_MILLIS)
+                    .setMaxUpdateDelayMillis(PARK_LOW_POWER_MAX_DELAY_MILLIS)
+                    .setMinUpdateDistanceMeters(PARK_LOW_POWER_DISTANCE_METERS)
+                    .build()
+            ParkSamplingProfile.NORMAL ->
+                LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 500L)
+                    .setMinUpdateIntervalMillis(250L)
+                    .setMaxUpdateDelayMillis(1_000L)
+                    .setMinUpdateDistanceMeters(1f)
+                    .build()
+        }
+        locationClient.removeLocationUpdates(locationCallback).addOnCompleteListener {
+            locationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
+                .addOnFailureListener { error ->
+                    gpsStatus = GpsStatus.ERROR
+                    gpsMessage = error.message?.take(100) ?: "Could not start GPS"
+                    publishState()
+                }
+        }
     }
 
     private fun stopSampling() {
@@ -249,7 +274,8 @@ class RideTrackingService : Service(), SensorEventListener {
         sensorsRegistered = false
     }
 
-    private fun registerSensors() {
+    private fun registerSensors(samplingPeriodUs: Int = SensorSamplingProfile.MOTION_PERIOD_US) {
+        if (sensorsRegistered) sensorManager.unregisterListener(this)
         val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         val gameRotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
@@ -260,7 +286,7 @@ class RideTrackingService : Service(), SensorEventListener {
             else -> OrientationSource.NONE
         }
         val registered = listOfNotNull(accelerometer, gyroscope, rotation).map {
-            sensorManager.registerListener(this, it, SensorSamplingProfile.MOTION_PERIOD_US)
+            sensorManager.registerListener(this, it, samplingPeriodUs)
         }
         sensorsRegistered = registered.any { it }
     }
@@ -285,7 +311,9 @@ class RideTrackingService : Service(), SensorEventListener {
         val recording = ride?.state == RideState.RECORDING
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
-                detector?.onAcceleration(event.timestamp, event.values[0], event.values[1], event.values[2])
+                if (recording) {
+                    detector?.onAcceleration(event.timestamp, event.values[0], event.values[1], event.values[2])
+                }
                 if (recording && motionBuffer.addAcceleration(Vector3Sample(
                         timestampMillis, event.values[0], event.values[1], event.values[2],
                     )) >= MOTION_BUFFER_EVENT_LIMIT
@@ -294,7 +322,7 @@ class RideTrackingService : Service(), SensorEventListener {
                 }
             }
             Sensor.TYPE_GYROSCOPE -> {
-                detector?.onGyroscope(event.values[0], event.values[1], event.values[2])
+                if (recording) detector?.onGyroscope(event.values[0], event.values[1], event.values[2])
                 if (recording && motionBuffer.addGyroscope(Vector3Sample(
                         timestampMillis, event.values[0], event.values[1], event.values[2],
                     )) >= MOTION_BUFFER_EVENT_LIMIT
@@ -412,7 +440,7 @@ class RideTrackingService : Service(), SensorEventListener {
             parkZones = zones
             parkDayState = ParkDayState.WAITING_FOR_SUMMIT
             getSharedPreferences(PARK_DAY_PREFERENCES, MODE_PRIVATE).edit().putLong(KEY_PARK_ID, parkId).apply()
-            startLocationSampling()
+            applyParkSamplingProfile(force = true)
             startInForeground(paused = true)
             publishState()
         }
@@ -433,7 +461,7 @@ class RideTrackingService : Service(), SensorEventListener {
             bikeParkName = park.name
             parkZones = zones
             parkDayState = ParkDayState.WAITING_FOR_SUMMIT
-            startLocationSampling()
+            applyParkSamplingProfile(force = true)
             publishState()
         }
     }
@@ -454,6 +482,7 @@ class RideTrackingService : Service(), SensorEventListener {
         val inSummit = inside(ParkZoneType.SUMMIT)
         val inBottom = inside(ParkZoneType.BOTTOM)
         val inExclusion = inside(ParkZoneType.EXCLUSION)
+        val previousParkDayState = parkDayState
         when (parkDayState) {
             ParkDayState.WAITING_IN_SUMMIT, ParkDayState.WAITING_FOR_SUMMIT -> {
                 if (inSummit) summitInsideFixes++ else summitInsideFixes = 0
@@ -487,6 +516,7 @@ class RideTrackingService : Service(), SensorEventListener {
             }
             ParkDayState.INACTIVE -> Unit
         }
+        if (parkDayState != previousParkDayState) applyParkSamplingProfile()
         publishState()
     }
 
@@ -508,7 +538,8 @@ class RideTrackingService : Service(), SensorEventListener {
             detectedJumps = 0
             detectedFlightSeconds = 0.0
             parkDayState = ParkDayState.RECORDING_RUN
-            registerSensors()
+            configureDetector()
+            applyParkSamplingProfile()
             val buffered = pendingLocations.toList()
             pendingLocations.clear()
             buffered.forEach(::acceptRideLocation)
@@ -524,6 +555,7 @@ class RideTrackingService : Service(), SensorEventListener {
         stopMotionSampling()
         val finalMotion = flushMotion()
         ride = null
+        applyParkSamplingProfile()
         previousLocation = null
         speedWindow.clear()
         scope.launch {
@@ -547,6 +579,7 @@ class RideTrackingService : Service(), SensorEventListener {
         bikeParkName = null
         parkZones = emptyList()
         parkDayState = ParkDayState.INACTIVE
+        parkSamplingProfile = null
         clearParkPreference()
         releaseWakeLock()
         scope.launch {
@@ -629,6 +662,15 @@ class RideTrackingService : Service(), SensorEventListener {
             minimumJumpHeightMeters = recordingSettings.activeMinimumHeightMeters,
             gpsStatus = gpsStatus,
             gpsMessage = gpsMessage,
+            latestLocation = latestLocation?.let {
+                LiveLocation(
+                    recordedAt = it.time,
+                    latitude = it.latitude,
+                    longitude = it.longitude,
+                    bearingDegrees = it.bearing.takeIf { _ -> it.hasBearing() },
+                    accuracyMeters = it.accuracy,
+                )
+            },
             bikeParkId = bikeParkId,
             bikeParkName = bikeParkName,
             parkDayState = parkDayState,
@@ -720,5 +762,8 @@ class RideTrackingService : Service(), SensorEventListener {
         private const val PARK_PENDING_WINDOW_MILLIS = 5_000L
         private const val PARK_PENDING_POINT_LIMIT = 40
         private const val PARK_MAX_ACCURACY_METERS = 25f
+        private const val PARK_LOW_POWER_INTERVAL_MILLIS = 10_000L
+        private const val PARK_LOW_POWER_MAX_DELAY_MILLIS = 30_000L
+        private const val PARK_LOW_POWER_DISTANCE_METERS = 10f
     }
 }

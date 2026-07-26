@@ -8,6 +8,14 @@ import com.example.flightlog.bikepark.ParkDayState
 
 enum class GpsStatus { ACQUIRING, READY, POOR_SIGNAL, UNAVAILABLE, PERMISSION_DENIED, ERROR }
 
+data class LiveLocation(
+    val recordedAt: Long,
+    val latitude: Double,
+    val longitude: Double,
+    val bearingDegrees: Float?,
+    val accuracyMeters: Float,
+)
+
 data class LiveRideState(
     val rideId: Long? = null,
     val state: RideState? = null,
@@ -21,6 +29,7 @@ data class LiveRideState(
     val minimumJumpHeightMeters: Float = RecordingSettings.DEFAULT_POCKET_MINIMUM_HEIGHT_METERS,
     val gpsStatus: GpsStatus = GpsStatus.ACQUIRING,
     val gpsMessage: String? = null,
+    val latestLocation: LiveLocation? = null,
     val bikeParkId: Long? = null,
     val bikeParkName: String? = null,
     val parkDayState: ParkDayState = ParkDayState.INACTIVE,
