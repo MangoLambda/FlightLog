@@ -1606,6 +1606,18 @@ private fun JumpDetailScreen(
                         }
                         Text("${jump.confidence}% confidence • ${jump.sensorQuality.name.lowercase().replace('_', ' ')}")
                         Text("Type confidence ${jump.flightKindConfidence}%${if (jump.correctedFlightKind != null) " • rider corrected" else ""}")
+                        Row(Modifier.fillMaxWidth()) {
+                            JumpDetailMetric(
+                                "LAUNCH IMPULSE",
+                                sensorAnalysis.upwardLaunchImpulseMps?.let { String.format(Locale.US, "%.2f m/s", it) } ?: "—",
+                                Modifier.weight(1f),
+                            )
+                            JumpDetailMetric(
+                                "LAUNCH PEAK",
+                                sensorAnalysis.upwardLaunchPeakMps2?.let { String.format(Locale.US, "%.2f m/s²", it) } ?: "—",
+                                Modifier.weight(1f),
+                            )
+                        }
                         FlightKindSelector(jump, onFlightKind)
                     }
                 }
