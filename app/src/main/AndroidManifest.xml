@@ -32,6 +32,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".bikepark.ParkEditorActivity"
+            android:exported="false" />
+
         <service
             android:name=".tracking.RideTrackingService"
             android:exported="false"

@@ -16,8 +16,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         StopEventEntity::class, TrailPauseZoneEntity::class, TrailSectionEntity::class,
         TrailPassEntity::class, TrailStopObservationEntity::class, SectionEffortEntity::class,
         PhysicalFeatureEntity::class, FeatureObservationEntity::class, ManualTrailAssignmentEntity::class,
+        BikeParkEntity::class, ParkZoneEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -32,7 +33,7 @@ abstract class FlightLogDatabase : RoomDatabase() {
                 context.applicationContext,
                 FlightLogDatabase::class.java,
                 "flightlog.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).build().also { instance = it }
         }
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -142,6 +143,17 @@ abstract class FlightLogDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX index_manual_trail_assignments_trailId ON manual_trail_assignments(trailId)")
                 db.execSQL("DELETE FROM trail_passes")
                 db.execSQL("UPDATE rides SET analysisVersion = 0")
+            }
+        }
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE rides ADD COLUMN bikeParkId INTEGER")
+                db.execSQL("ALTER TABLE rides ADD COLUMN automaticParkRun INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("""CREATE TABLE bike_parks (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, uuid TEXT NOT NULL, name TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)""")
+                db.execSQL("CREATE UNIQUE INDEX index_bike_parks_uuid ON bike_parks(uuid)")
+                db.execSQL("""CREATE TABLE park_zones (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, parkId INTEGER NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, encodedVertices TEXT NOT NULL, corridorWidthMeters REAL NOT NULL, FOREIGN KEY(parkId) REFERENCES bike_parks(id) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+                db.execSQL("CREATE INDEX index_park_zones_parkId ON park_zones(parkId)")
+                db.execSQL("CREATE INDEX index_park_zones_parkId_type ON park_zones(parkId, type)")
             }
         }
     }

@@ -13,6 +13,7 @@ import com.example.flightlog.domain.SectionKind
 import com.example.flightlog.domain.SectionState
 import com.example.flightlog.domain.TelemetryKind
 import com.example.flightlog.domain.TrailState
+import com.example.flightlog.bikepark.ParkZoneType
 
 class Converters {
     @TypeConverter fun rideState(value: String) = RideState.valueOf(value)
@@ -39,4 +40,6 @@ class Converters {
     @TypeConverter fun effortInvalidReason(value: EffortInvalidReason?) = value?.name
     @TypeConverter fun pauseZoneState(value: String) = PauseZoneState.valueOf(value)
     @TypeConverter fun pauseZoneState(value: PauseZoneState) = value.name
+    @TypeConverter fun parkZoneType(value: String) = ParkZoneType.valueOf(value)
+    @TypeConverter fun parkZoneType(value: ParkZoneType) = value.name
 }

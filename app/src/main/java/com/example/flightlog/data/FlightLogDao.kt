@@ -43,9 +43,30 @@ interface FlightLogDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertEffortIfAbsent(effort: SectionEffortEntity): Long
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertStopObservations(observations: List<TrailStopObservationEntity>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertStopObservationIfAbsent(observation: TrailStopObservationEntity): Long
+    @Insert suspend fun insertBikePark(park: BikeParkEntity): Long
+    @Update suspend fun updateBikePark(park: BikeParkEntity)
+    @Insert suspend fun insertParkZones(zones: List<ParkZoneEntity>)
 
     @Query("SELECT * FROM rides ORDER BY startedAt DESC")
     fun observeRides(): Flow<List<RideEntity>>
+
+    @Query("SELECT * FROM bike_parks ORDER BY name COLLATE NOCASE")
+    fun observeBikeParks(): Flow<List<BikeParkEntity>>
+
+    @Query("SELECT * FROM bike_parks ORDER BY name COLLATE NOCASE")
+    suspend fun allBikeParks(): List<BikeParkEntity>
+
+    @Query("SELECT * FROM bike_parks WHERE id = :parkId")
+    suspend fun bikePark(parkId: Long): BikeParkEntity?
+
+    @Query("SELECT * FROM park_zones WHERE parkId = :parkId ORDER BY type, id")
+    suspend fun parkZones(parkId: Long): List<ParkZoneEntity>
+
+    @Query("DELETE FROM park_zones WHERE parkId = :parkId")
+    suspend fun deleteParkZones(parkId: Long)
+
+    @Query("DELETE FROM bike_parks WHERE id = :parkId")
+    suspend fun deleteBikePark(parkId: Long)
 
     @Query("SELECT * FROM jump_events ORDER BY takeoffAt DESC")
     fun observeJumps(): Flow<List<JumpEventEntity>>

@@ -44,6 +44,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import kotlin.math.max
+import com.example.flightlog.bikepark.GeoPoint
+import com.example.flightlog.bikepark.ParkDayState
+import com.example.flightlog.bikepark.ParkGeometry
+import com.example.flightlog.bikepark.ParkZoneType
+import com.example.flightlog.data.ParkZoneEntity
 
 class RideTrackingService : Service(), SensorEventListener {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -68,6 +73,15 @@ class RideTrackingService : Service(), SensorEventListener {
     private var lastLocationJob: Job? = null
     private var orientationSource = OrientationSource.NONE
     private var lastStationaryStoredAt = 0L
+    private var bikeParkId: Long? = null
+    private var bikeParkName: String? = null
+    private var parkZones: List<ParkZoneEntity> = emptyList()
+    private var parkDayState = ParkDayState.INACTIVE
+    private var summitInsideFixes = 0
+    private var summitOutsideFixes = 0
+    private var bottomInsideFixes = 0
+    private var pendingStartedAt = 0L
+    private val pendingLocations = ArrayDeque<Location>()
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -94,22 +108,30 @@ class RideTrackingService : Service(), SensorEventListener {
         recordingSettings = RecordingSettingsStore.read(this)
         createNotificationChannel()
         configureDetector()
+        val preferences = getSharedPreferences(PARK_DAY_PREFERENCES, MODE_PRIVATE)
+        preferences.getLong(KEY_PARK_ID, 0L).takeIf { it > 0 }?.let {
+            bikeParkId = it
+            restoreParkDay(it)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action ?: ACTION_START) {
+        when (intent?.action ?: if (bikeParkId != null) ACTION_RESTORE_PARK else ACTION_START) {
             ACTION_START -> startRide()
             ACTION_PAUSE -> pauseRide()
             ACTION_RESUME -> resumeRide()
             ACTION_STOP -> finishRide()
+            ACTION_START_PARK -> startParkDay(intent?.getLongExtra(EXTRA_PARK_ID, 0L) ?: 0L)
+            ACTION_END_PARK -> endParkDay()
+            ACTION_RESTORE_PARK -> Unit
         }
-        return START_NOT_STICKY
+        return if (bikeParkId != null || intent?.action == ACTION_START_PARK) START_STICKY else START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun startRide() {
-        if (ride != null) return
+        if (ride != null || bikeParkId != null) return
         startInForeground(paused = false)
         acquireWakeLock()
         scope.launch {
@@ -125,6 +147,7 @@ class RideTrackingService : Service(), SensorEventListener {
     }
 
     private fun pauseRide() {
+        if (bikeParkId != null) return
         val current = ride ?: return
         stopSampling()
         flushMotion()
@@ -138,6 +161,7 @@ class RideTrackingService : Service(), SensorEventListener {
     }
 
     private fun resumeRide() {
+        if (bikeParkId != null) return
         val current = ride ?: return
         val resumedRide = current.copy(state = RideState.RECORDING)
         ride = resumedRide
@@ -148,6 +172,10 @@ class RideTrackingService : Service(), SensorEventListener {
     }
 
     private fun finishRide() {
+        if (bikeParkId != null) {
+            endParkDay()
+            return
+        }
         val current = ride ?: run { stopSelf(); return }
         stoppingNormally = true
         stopSampling()
@@ -189,8 +217,34 @@ class RideTrackingService : Service(), SensorEventListener {
         registerSensors()
     }
 
+    private fun startLocationSampling() {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            gpsStatus = GpsStatus.PERMISSION_DENIED
+            gpsMessage = "Precise location permission required"
+            publishState()
+            return
+        }
+        gpsStatus = GpsStatus.ACQUIRING
+        gpsMessage = null
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 500L)
+            .setMinUpdateIntervalMillis(250L)
+            .setMaxUpdateDelayMillis(1_000L)
+            .setMinUpdateDistanceMeters(1f)
+            .build()
+        locationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
+            .addOnFailureListener { error ->
+                gpsStatus = GpsStatus.ERROR
+                gpsMessage = error.message?.take(100) ?: "Could not start GPS"
+                publishState()
+            }
+    }
+
     private fun stopSampling() {
         locationClient.removeLocationUpdates(locationCallback)
+        stopMotionSampling()
+    }
+
+    private fun stopMotionSampling() {
         if (sensorsRegistered) sensorManager.unregisterListener(this)
         sensorsRegistered = false
     }
@@ -269,6 +323,14 @@ class RideTrackingService : Service(), SensorEventListener {
     }
 
     private fun acceptLocation(location: Location) {
+        if (bikeParkId != null) {
+            acceptParkLocation(location)
+            return
+        }
+        acceptRideLocation(location)
+    }
+
+    private fun acceptRideLocation(location: Location) {
         val currentRide = ride ?: return
         if (currentRide.state != RideState.RECORDING) return
         val provisional = LocationSample(
@@ -329,6 +391,181 @@ class RideTrackingService : Service(), SensorEventListener {
         }
     }
 
+    private fun startParkDay(parkId: Long) {
+        if (parkId <= 0 || ride != null || bikeParkId != null) return
+        startInForeground(paused = true)
+        acquireWakeLock()
+        scope.launch {
+            val park = dao.bikePark(parkId)
+            val zones = dao.parkZones(parkId)
+            if (park == null || zones.none { it.type == ParkZoneType.SUMMIT } || zones.none { it.type == ParkZoneType.BOTTOM }) {
+                gpsStatus = GpsStatus.ERROR
+                gpsMessage = "Bike park needs summit and bottom zones"
+                publishState()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                releaseWakeLock()
+                stopSelf()
+                return@launch
+            }
+            bikeParkId = parkId
+            bikeParkName = park.name
+            parkZones = zones
+            parkDayState = ParkDayState.WAITING_FOR_SUMMIT
+            getSharedPreferences(PARK_DAY_PREFERENCES, MODE_PRIVATE).edit().putLong(KEY_PARK_ID, parkId).apply()
+            startLocationSampling()
+            startInForeground(paused = true)
+            publishState()
+        }
+    }
+
+    private fun restoreParkDay(parkId: Long) {
+        startInForeground(paused = true)
+        acquireWakeLock()
+        scope.launch {
+            val park = dao.bikePark(parkId)
+            val zones = dao.parkZones(parkId)
+            if (park == null || zones.isEmpty()) {
+                clearParkPreference()
+                stopSelf()
+                return@launch
+            }
+            bikeParkId = parkId
+            bikeParkName = park.name
+            parkZones = zones
+            parkDayState = ParkDayState.WAITING_FOR_SUMMIT
+            startLocationSampling()
+            publishState()
+        }
+    }
+
+    private fun acceptParkLocation(location: Location) {
+        latestLocation = location
+        if (location.accuracy > PARK_MAX_ACCURACY_METERS) {
+            gpsStatus = GpsStatus.POOR_SIGNAL
+            gpsMessage = "Accuracy ±${location.accuracy.toInt()} m"
+            publishState()
+            return
+        }
+        gpsStatus = GpsStatus.READY
+        gpsMessage = null
+        val point = GeoPoint(location.latitude, location.longitude)
+        fun inside(type: ParkZoneType) = parkZones.asSequence().filter { it.type == type }
+            .any { ParkGeometry.contains(point, ParkGeometry.decode(it.encodedVertices)) }
+        val inSummit = inside(ParkZoneType.SUMMIT)
+        val inBottom = inside(ParkZoneType.BOTTOM)
+        val inExclusion = inside(ParkZoneType.EXCLUSION)
+        when (parkDayState) {
+            ParkDayState.WAITING_IN_SUMMIT, ParkDayState.WAITING_FOR_SUMMIT -> {
+                if (inSummit) summitInsideFixes++ else summitInsideFixes = 0
+                if (summitInsideFixes >= PARK_CONFIRMATION_FIXES) {
+                    parkDayState = ParkDayState.WAITING_IN_SUMMIT
+                    summitOutsideFixes = 0
+                } else if (parkDayState == ParkDayState.WAITING_IN_SUMMIT && !inSummit) {
+                    summitOutsideFixes++
+                    if (summitOutsideFixes >= PARK_CONFIRMATION_FIXES) {
+                        parkDayState = ParkDayState.PENDING_START
+                        pendingStartedAt = location.time
+                        pendingLocations.clear()
+                        pendingLocations += Location(location)
+                    }
+                }
+            }
+            ParkDayState.PENDING_START -> {
+                pendingLocations += Location(location)
+                while (pendingLocations.size > PARK_PENDING_POINT_LIMIT) pendingLocations.removeFirst()
+                if (inExclusion || inSummit) {
+                    pendingLocations.clear()
+                    parkDayState = if (inSummit) ParkDayState.WAITING_IN_SUMMIT else ParkDayState.WAITING_FOR_SUMMIT
+                } else if (location.time - pendingStartedAt >= PARK_PENDING_WINDOW_MILLIS) {
+                    beginAutomaticRun()
+                }
+            }
+            ParkDayState.RECORDING_RUN -> {
+                acceptRideLocation(location)
+                if (inBottom) bottomInsideFixes++ else bottomInsideFixes = 0
+                if (bottomInsideFixes >= PARK_CONFIRMATION_FIXES) finishAutomaticRun()
+            }
+            ParkDayState.INACTIVE -> Unit
+        }
+        publishState()
+    }
+
+    private fun beginAutomaticRun() {
+        if (ride != null) return
+        val parkId = bikeParkId ?: return
+        scope.launch {
+            val first = pendingLocations.firstOrNull()
+            val created = RideEntity(
+                startedAt = first?.time ?: System.currentTimeMillis(),
+                mountingMode = recordingSettings.mountingMode,
+                bikeParkId = parkId,
+                automaticParkRun = true,
+            )
+            val id = dao.insertRide(created)
+            ride = created.copy(id = id)
+            previousLocation = null
+            speedWindow.clear()
+            detectedJumps = 0
+            detectedFlightSeconds = 0.0
+            parkDayState = ParkDayState.RECORDING_RUN
+            registerSensors()
+            val buffered = pendingLocations.toList()
+            pendingLocations.clear()
+            buffered.forEach(::acceptRideLocation)
+            startInForeground(paused = false)
+            publishState()
+        }
+    }
+
+    private fun finishAutomaticRun() {
+        val current = ride ?: return
+        parkDayState = ParkDayState.WAITING_FOR_SUMMIT
+        bottomInsideFixes = 0
+        stopMotionSampling()
+        val finalMotion = flushMotion()
+        ride = null
+        previousLocation = null
+        speedWindow.clear()
+        scope.launch {
+            lastLocationJob?.join()
+            finalMotion.joinAllMotion()
+            dao.updateRide(current.copy(endedAt = System.currentTimeMillis(), state = RideState.COMPLETED))
+            RideProcessingWorker.enqueue(this@RideTrackingService)
+            startInForeground(paused = true)
+            publishState()
+        }
+    }
+
+    private fun endParkDay() {
+        if (bikeParkId == null) return
+        val current = ride
+        stoppingNormally = true
+        stopSampling()
+        val finalMotion = flushMotion()
+        ride = null
+        bikeParkId = null
+        bikeParkName = null
+        parkZones = emptyList()
+        parkDayState = ParkDayState.INACTIVE
+        clearParkPreference()
+        releaseWakeLock()
+        scope.launch {
+            lastLocationJob?.join()
+            finalMotion.joinAllMotion()
+            if (current != null) {
+                dao.updateRide(current.copy(endedAt = System.currentTimeMillis(), state = RideState.COMPLETED))
+                RideProcessingWorker.enqueue(this@RideTrackingService)
+            }
+            TrackingState.clear()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private fun clearParkPreference() {
+        getSharedPreferences(PARK_DAY_PREFERENCES, MODE_PRIVATE).edit().remove(KEY_PARK_ID).apply()
+    }
+
     private fun recordJump(takeoffNanos: Long, landingNanos: Long, confidence: Int, quality: SensorQuality) {
         val currentRide = ride ?: return
         val flightSeconds = (landingNanos - takeoffNanos) / 1_000_000_000.0
@@ -377,13 +614,14 @@ class RideTrackingService : Service(), SensorEventListener {
     }
 
     private fun publishState(speedMps: Double = RideMath.smoothedSpeedMetersPerSecond(speedWindow)) {
-        val current = ride ?: return
+        val current = ride
+        if (current == null && bikeParkId == null) return
         TrackingState.update(LiveRideState(
-            rideId = current.id,
-            state = current.state,
-            startedAt = current.startedAt,
+            rideId = current?.id,
+            state = current?.state,
+            startedAt = current?.startedAt,
             speedMps = speedMps,
-            distanceMeters = current.distanceMeters,
+            distanceMeters = current?.distanceMeters ?: 0.0,
             jumpCount = detectedJumps,
             flightTimeSeconds = detectedFlightSeconds,
             gpsAccuracyMeters = latestLocation?.accuracy,
@@ -391,19 +629,29 @@ class RideTrackingService : Service(), SensorEventListener {
             minimumJumpHeightMeters = recordingSettings.activeMinimumHeightMeters,
             gpsStatus = gpsStatus,
             gpsMessage = gpsMessage,
+            bikeParkId = bikeParkId,
+            bikeParkName = bikeParkName,
+            parkDayState = parkDayState,
         ))
     }
 
     private fun startInForeground(paused: Boolean) {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle(if (paused) "Ride paused" else "FlightLog is recording")
-            .setContentText(if (paused) "Resume when you are ready" else "Location and motion sensors are active")
+            .setContentTitle(if (bikeParkId != null) bikeParkName ?: "Bike park day" else if (paused) "Ride paused" else "FlightLog is recording")
+            .setContentText(if (bikeParkId != null) {
+                if (parkDayState == ParkDayState.RECORDING_RUN) "Recording downhill run" else "GPS active · waiting for next run"
+            } else if (paused) "Resume when you are ready" else "Location and motion sensors are active")
             .setContentIntent(activityIntent())
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .addAction(0, if (paused) "Resume" else "Pause", serviceIntent(if (paused) ACTION_RESUME else ACTION_PAUSE, 10))
-            .addAction(0, "Finish", serviceIntent(ACTION_STOP, 11))
+            .apply {
+                if (bikeParkId != null) addAction(0, "End park day", serviceIntent(ACTION_END_PARK, 11))
+                else {
+                    addAction(0, if (paused) "Resume" else "Pause", serviceIntent(if (paused) ACTION_RESUME else ACTION_PAUSE, 10))
+                    addAction(0, "Finish", serviceIntent(ACTION_STOP, 11))
+                }
+            }
             .build()
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
     }
@@ -458,9 +706,19 @@ class RideTrackingService : Service(), SensorEventListener {
         const val ACTION_PAUSE = "com.example.flightlog.PAUSE_RIDE"
         const val ACTION_RESUME = "com.example.flightlog.RESUME_RIDE"
         const val ACTION_STOP = "com.example.flightlog.STOP_RIDE"
+        const val ACTION_START_PARK = "com.example.flightlog.START_PARK_DAY"
+        const val ACTION_END_PARK = "com.example.flightlog.END_PARK_DAY"
+        private const val ACTION_RESTORE_PARK = "com.example.flightlog.RESTORE_PARK_DAY"
+        const val EXTRA_PARK_ID = "park_id"
         private const val CHANNEL_ID = "ride_recording"
         private const val NOTIFICATION_ID = 42
         private const val MOTION_BUFFER_EVENT_LIMIT = 3_250
         private const val MOTION_RETENTION_MILLIS = 90L * 24 * 60 * 60 * 1_000
+        private const val PARK_DAY_PREFERENCES = "park_day"
+        private const val KEY_PARK_ID = "park_id"
+        private const val PARK_CONFIRMATION_FIXES = 2
+        private const val PARK_PENDING_WINDOW_MILLIS = 5_000L
+        private const val PARK_PENDING_POINT_LIMIT = 40
+        private const val PARK_MAX_ACCURACY_METERS = 25f
     }
 }

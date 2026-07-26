@@ -20,6 +20,7 @@ import com.example.flightlog.domain.TrailState
 import java.util.UUID
 import com.example.flightlog.domain.FeatureAssignmentState
 import com.example.flightlog.domain.FeatureAssignmentSource
+import com.example.flightlog.bikepark.ParkZoneType
 
 @Entity(tableName = "rides", indices = [Index(value = ["uuid"], unique = true)])
 data class RideEntity(
@@ -34,6 +35,36 @@ data class RideEntity(
     val mountingMode: MountingMode? = null,
     val archivedAt: Long? = null,
     @ColumnInfo(defaultValue = "0") val analysisVersion: Int = 0,
+    val bikeParkId: Long? = null,
+    @ColumnInfo(defaultValue = "0") val automaticParkRun: Boolean = false,
+)
+
+@Entity(tableName = "bike_parks", indices = [Index(value = ["uuid"], unique = true)])
+data class BikeParkEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val uuid: String = UUID.randomUUID().toString(),
+    val name: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+@Entity(
+    tableName = "park_zones",
+    foreignKeys = [ForeignKey(
+        entity = BikeParkEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["parkId"],
+        onDelete = ForeignKey.CASCADE,
+    )],
+    indices = [Index("parkId"), Index(value = ["parkId", "type"])],
+)
+data class ParkZoneEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val parkId: Long,
+    val name: String,
+    val type: ParkZoneType,
+    val encodedVertices: String,
+    val corridorWidthMeters: Double = 20.0,
 )
 
 @Entity(

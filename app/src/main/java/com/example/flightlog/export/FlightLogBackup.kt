@@ -25,6 +25,9 @@ class FlightLogBackup(
 
     suspend fun export(output: OutputStream) {
         val rides = dao.allRides()
+        val bikeParks = dao.allBikeParks()
+        val bikeParkUuids = bikeParks.associate { it.id to it.uuid }
+        val parkZones = bikeParks.flatMap { dao.parkZones(it.id) }
         val rideUuids = rides.associate { it.id to it.uuid }
         val stopEvents = dao.allStopEvents()
         val stopEventUuids = stopEvents.associate { it.id to it.uuid }
@@ -51,7 +54,9 @@ class FlightLogBackup(
             zip.json("manifest.json", JSONObject()
                 .put("format", FORMAT_VERSION).put("analysisVersion", TrailAnalysis.ANALYSIS_VERSION)
                 .put("createdAt", System.currentTimeMillis()).toString())
-            zip.jsonLines("rides.jsonl", rides.map { it.json() })
+            zip.jsonLines("bike-parks.jsonl", bikeParks.map { it.json() })
+            zip.jsonLines("park-zones.jsonl", parkZones.map { it.json(bikeParkUuids.getValue(it.parkId)) })
+            zip.jsonLines("rides.jsonl", rides.map { it.json(it.bikeParkId?.let(bikeParkUuids::get)) })
             zip.jsonLines("stops.jsonl", stopEvents.map { it.json(rideUuids.getValue(it.rideId)) })
             zip.jsonLines("jumps.jsonl", jumps.map { it.json(rideUuids.getValue(it.rideId)) })
             zip.jsonLines("jump-traces.jsonl", jumpTraces.map { trace ->
@@ -108,6 +113,7 @@ class FlightLogBackup(
             if (format >= 2) require(V2_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
             if (format >= 3) require(V3_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
             if (format >= 6) require(V6_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
+            if (format >= 7) require(V7_METADATA.all { File(directory, it).isFile }) { "Backup is incomplete" }
             return database.withTransaction { restore(directory) }
         } finally {
             directory.deleteRecursively()
@@ -115,6 +121,33 @@ class FlightLogBackup(
     }
 
     private suspend fun restore(directory: File): BackupImportResult {
+        val bikeParkIds = mutableMapOf<String, Long>()
+        val newBikeParkUuids = mutableSetOf<String>()
+        directory.forEachJsonIfPresent("bike-parks.jsonl") { json ->
+            val uuid = json.requiredUuid("uuid")
+            val existing = dao.allBikeParks().firstOrNull { it.uuid == uuid }
+            val park = BikeParkEntity(
+                uuid = uuid,
+                name = json.getString("name").take(80).also { require(it.isNotBlank()) },
+                createdAt = json.getLong("createdAt"),
+                updatedAt = json.getLong("updatedAt"),
+            )
+            bikeParkIds[uuid] = existing?.id ?: dao.insertBikePark(park).also { newBikeParkUuids += uuid }
+        }
+        directory.forEachJsonIfPresent("park-zones.jsonl") { json ->
+            val parkUuid = json.requiredUuid("parkUuid")
+            val parkId = bikeParkIds[parkUuid] ?: error("Zone references unknown bike park")
+            if (parkUuid !in newBikeParkUuids) return@forEachJsonIfPresent
+            val encoded = json.getString("encodedVertices")
+            require(com.example.flightlog.bikepark.ParkGeometry.decode(encoded).size >= 3)
+            dao.insertParkZones(listOf(ParkZoneEntity(
+                parkId = parkId,
+                name = json.getString("name").take(80),
+                type = com.example.flightlog.bikepark.ParkZoneType.valueOf(json.getString("type")),
+                encodedVertices = encoded,
+                corridorWidthMeters = json.getDouble("corridorWidthMeters").also { require(it in 2.0..100.0) },
+            )))
+        }
         val rideIds = mutableMapOf<String, Long>()
         var added = 0
         var duplicates = 0
@@ -127,6 +160,8 @@ class FlightLogBackup(
                 movingTimeMillis = json.getLong("movingTimeMillis"), maxSpeedMps = json.getDouble("maxSpeedMps"),
                 uuid = uuid, mountingMode = json.nullableString("mountingMode")?.let(MountingMode::valueOf),
                 archivedAt = json.nullableLong("archivedAt"), analysisVersion = json.optInt("analysisVersion", 0),
+                bikeParkId = json.nullableString("bikeParkUuid")?.let { bikeParkIds[it] },
+                automaticParkRun = json.optBoolean("automaticParkRun", false),
             ).also { requireRideRanges(it) }
             val id = existing?.id ?: dao.insertRideIfAbsent(ride).also { require(it > 0) }
             if (existing == null) added++ else duplicates++
@@ -442,7 +477,7 @@ class FlightLogBackup(
 
     companion object {
         const val MIME_TYPE = "application/zip"
-        private const val FORMAT_VERSION = 6
+        private const val FORMAT_VERSION = 7
         private const val MAX_JUMP_TRACE_SAMPLES = 10_000
         private const val MAX_ENTRY_BYTES = 512L * 1024 * 1024
         private const val MAX_TOTAL_BYTES = 2L * 1024 * 1024 * 1024
@@ -453,7 +488,8 @@ class FlightLogBackup(
         private val V2_METADATA = setOf("stops.jsonl", "pause-zones.jsonl", "stop-observations.jsonl")
         private val V3_METADATA = setOf("jump-traces.jsonl")
         private val V6_METADATA = setOf("features.jsonl", "feature-observations.jsonl")
-        private val METADATA = REQUIRED_METADATA + V2_METADATA + V3_METADATA + V6_METADATA
+        private val V7_METADATA = setOf("bike-parks.jsonl", "park-zones.jsonl")
+        private val METADATA = REQUIRED_METADATA + V2_METADATA + V3_METADATA + V6_METADATA + V7_METADATA
     }
 }
 
@@ -486,10 +522,15 @@ private fun JSONObject.nullableInt(name: String): Int? = if (isNull(name)) null 
 private fun JSONObject.nullableDouble(name: String): Double? = if (isNull(name)) null else getDouble(name)
 private fun JSONObject.requiredUuid(name: String): String = getString(name).also { UUID.fromString(it) }
 
-private fun RideEntity.json() = JSONObject().put("uuid", uuid).put("startedAt", startedAt).putNullable("endedAt", endedAt)
+private fun BikeParkEntity.json() = JSONObject().put("uuid", uuid).put("name", name)
+    .put("createdAt", createdAt).put("updatedAt", updatedAt)
+private fun ParkZoneEntity.json(parkUuid: String) = JSONObject().put("parkUuid", parkUuid).put("name", name)
+    .put("type", type.name).put("encodedVertices", encodedVertices).put("corridorWidthMeters", corridorWidthMeters)
+private fun RideEntity.json(bikeParkUuid: String?) = JSONObject().put("uuid", uuid).put("startedAt", startedAt).putNullable("endedAt", endedAt)
     .put("state", state.name).put("distanceMeters", distanceMeters).put("movingTimeMillis", movingTimeMillis)
     .put("maxSpeedMps", maxSpeedMps).putNullable("mountingMode", mountingMode?.name)
     .putNullable("archivedAt", archivedAt).put("analysisVersion", analysisVersion)
+    .putNullable("bikeParkUuid", bikeParkUuid).put("automaticParkRun", automaticParkRun)
 private fun StopEventEntity.json(rideUuid: String) = JSONObject().put("uuid", uuid).put("rideUuid", rideUuid)
     .put("startedAt", startedAt).put("endedAt", endedAt).put("latitude", latitude).put("longitude", longitude)
     .put("accuracyMeters", accuracyMeters).put("durationMillis", durationMillis)

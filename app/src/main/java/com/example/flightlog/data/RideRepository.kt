@@ -17,10 +17,13 @@ import kotlinx.coroutines.withContext
 import com.example.flightlog.domain.FeatureAssignmentSource
 import com.example.flightlog.domain.FeatureAssignmentState
 import com.example.flightlog.tracking.PhysicalFeatureAnalyzer
+import com.example.flightlog.bikepark.ParkGeometry
+import com.example.flightlog.bikepark.ParkZoneDraft
 
 class RideRepository(private val database: FlightLogDatabase) {
     private val dao = database.dao()
     val rides: Flow<List<RideEntity>> = dao.observeRides()
+    val bikeParks: Flow<List<BikeParkEntity>> = dao.observeBikeParks()
     val jumps: Flow<List<JumpEventEntity>> = dao.observeJumps()
     val physicalFeatures: Flow<List<PhysicalFeatureEntity>> = dao.observePhysicalFeatures()
     val featureObservations: Flow<List<FeatureObservationEntity>> = dao.observeFeatureObservations()
@@ -86,6 +89,42 @@ class RideRepository(private val database: FlightLogDatabase) {
     }
 
     fun stops(rideId: Long) = dao.observeStopEventsForRide(rideId)
+    suspend fun bikePark(id: Long): Pair<BikeParkEntity, List<ParkZoneEntity>>? {
+        val park = dao.bikePark(id) ?: return null
+        return park to dao.parkZones(id)
+    }
+
+    suspend fun saveBikePark(id: Long?, name: String, zones: List<ParkZoneDraft>): Long {
+        val cleanName = name.trim().take(80)
+        require(cleanName.isNotBlank()) { "Enter a park name" }
+        val summits = zones.filter { it.type == com.example.flightlog.bikepark.ParkZoneType.SUMMIT }
+        val bottoms = zones.filter { it.type == com.example.flightlog.bikepark.ParkZoneType.BOTTOM }
+        val exclusions = zones.filter { it.type == com.example.flightlog.bikepark.ParkZoneType.EXCLUSION }
+        ParkGeometry.validate(summits, bottoms, exclusions)?.let { throw IllegalArgumentException(it) }
+        return database.withTransaction {
+            val now = System.currentTimeMillis()
+            val parkId = if (id == null) {
+                dao.insertBikePark(BikeParkEntity(name = cleanName, createdAt = now, updatedAt = now))
+            } else {
+                val existing = dao.bikePark(id) ?: throw IllegalArgumentException("Park no longer exists")
+                dao.updateBikePark(existing.copy(name = cleanName, updatedAt = now))
+                dao.deleteParkZones(id)
+                id
+            }
+            dao.insertParkZones(zones.map {
+                ParkZoneEntity(
+                    parkId = parkId,
+                    name = it.name.trim().take(80).ifBlank { it.type.name.lowercase().replaceFirstChar(Char::uppercase) },
+                    type = it.type,
+                    encodedVertices = ParkGeometry.encode(it.vertices),
+                    corridorWidthMeters = it.corridorWidthMeters.coerceIn(2.0, 100.0),
+                )
+            })
+            parkId
+        }
+    }
+
+    suspend fun deleteBikePark(id: Long) = dao.deleteBikePark(id)
     suspend fun setJumpStatus(id: Long, status: JumpStatus) {
         dao.setJumpStatus(id, status)
         if (status != JumpStatus.CONFIRMED) {

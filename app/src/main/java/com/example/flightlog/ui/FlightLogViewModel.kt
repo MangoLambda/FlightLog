@@ -60,6 +60,7 @@ class FlightLogViewModel(application: Application) : AndroidViewModel(applicatio
     private val app = application as FlightLogApplication
     private val repository = app.repository
     val rides = repository.rides.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val bikeParks = repository.bikeParks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val jumps = repository.jumps.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val physicalFeatures = repository.physicalFeatures.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val featureObservations = repository.featureObservations.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())

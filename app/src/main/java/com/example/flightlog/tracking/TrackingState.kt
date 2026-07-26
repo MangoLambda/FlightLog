@@ -4,6 +4,7 @@ import com.example.flightlog.domain.RideState
 import com.example.flightlog.domain.MountingMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.example.flightlog.bikepark.ParkDayState
 
 enum class GpsStatus { ACQUIRING, READY, POOR_SIGNAL, UNAVAILABLE, PERMISSION_DENIED, ERROR }
 
@@ -20,6 +21,9 @@ data class LiveRideState(
     val minimumJumpHeightMeters: Float = RecordingSettings.DEFAULT_POCKET_MINIMUM_HEIGHT_METERS,
     val gpsStatus: GpsStatus = GpsStatus.ACQUIRING,
     val gpsMessage: String? = null,
+    val bikeParkId: Long? = null,
+    val bikeParkName: String? = null,
+    val parkDayState: ParkDayState = ParkDayState.INACTIVE,
 )
 
 object TrackingState {

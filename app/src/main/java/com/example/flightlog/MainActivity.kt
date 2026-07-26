@@ -137,6 +137,9 @@ import com.example.flightlog.ui.theme.Amber
 import com.example.flightlog.ui.theme.FlightLogTheme
 import com.example.flightlog.ui.theme.Lime
 import com.example.flightlog.ui.theme.TrailCyan
+import com.example.flightlog.bikepark.ParkEditorActivity
+import com.example.flightlog.bikepark.ParkDayState
+import com.example.flightlog.data.BikeParkEntity
 import com.google.android.gms.location.LocationServices
 import java.time.Instant
 import java.time.LocalDate
@@ -158,6 +161,7 @@ class MainActivity : ComponentActivity() {
 private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     val context = LocalContext.current
     val rides by vm.rides.collectAsStateWithLifecycle()
+    val bikeParks by vm.bikeParks.collectAsStateWithLifecycle()
     val jumps by vm.jumps.collectAsStateWithLifecycle()
     val physicalFeatures by vm.physicalFeatures.collectAsStateWithLifecycle()
     val featureObservations by vm.featureObservations.collectAsStateWithLifecycle()
@@ -202,6 +206,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
         primaryTrailNames(manualTrailAssignments, passes, assignableTrails)
     }
     var pendingRideStart by remember { mutableStateOf(false) }
+    var pendingParkStart by remember { mutableStateOf<Long?>(null) }
     var focusMapProvider by remember { mutableStateOf(false) }
     var showActiveMapSettings by remember { mutableStateOf(false) }
     val rideStorageBytes = if (
@@ -234,7 +239,11 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
     }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (pendingRideStart && result[Manifest.permission.ACCESS_FINE_LOCATION] == true) startRideService(context)
+        pendingParkStart?.takeIf { result[Manifest.permission.ACCESS_FINE_LOCATION] == true }?.let {
+            startParkDayService(context, it)
+        }
         pendingRideStart = false
+        pendingParkStart = null
     }
     val backupExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument(FlightLogBackup.MIME_TYPE),
@@ -247,6 +256,14 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
             startRideService(context)
         } else {
             pendingRideStart = true
+            permissionLauncher.launch(permissions)
+        }
+    }
+    val startParkDay: (Long) -> Unit = { parkId ->
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            startParkDayService(context, parkId)
+        } else {
+            pendingParkStart = parkId
             permissionLauncher.launch(permissions)
         }
     }
@@ -283,7 +300,7 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
         vm.screen.value = AppScreen.SETTINGS
     }
 
-    if (live.state != null && showActiveMapSettings) {
+    if ((live.state != null || live.bikeParkId != null) && showActiveMapSettings) {
         BackHandler { showActiveMapSettings = false }
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
@@ -336,6 +353,20 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
         return
     }
 
+    if (live.bikeParkId != null) {
+        ParkDayScreen(
+            live = live,
+            points = points,
+            jumps = selectedJumps,
+            mapApiKey = effectiveMapApiKey,
+            mapStyle = mapStyle,
+            imperial = imperial,
+            onEnd = { sendRideAction(context, RideTrackingService.ACTION_END_PARK) },
+            onConfigureMap = { showActiveMapSettings = true },
+        )
+        return
+    }
+
     if (live.state != null) {
         ActiveRideScreen(
             live = live,
@@ -385,7 +416,12 @@ private fun FlightLogApp(vm: FlightLogViewModel = viewModel()) {
             }
             screenStateHolder.SaveableStateProvider(screenStateKey) {
                 when (screen) {
-                    AppScreen.RIDE -> HomeScreen(rides, points, selectedJumps, imperial, recordingSettings, effectiveMapApiKey, mapStyle, startRide, openMapSettings)
+                    AppScreen.RIDE -> HomeScreen(
+                        rides, points, selectedJumps, bikeParks, imperial, recordingSettings,
+                        effectiveMapApiKey, mapStyle, startRide, startParkDay,
+                        { context.startActivity(Intent(context, ParkEditorActivity::class.java)) },
+                        openMapSettings,
+                    )
                     AppScreen.HISTORY -> HistoryScreen(
                         rides = rides,
                         imperial = imperial,
@@ -617,11 +653,14 @@ private fun HomeScreen(
     rides: List<RideEntity>,
     points: List<com.example.flightlog.data.TrackPointEntity>,
     jumps: List<JumpEventEntity>,
+    bikeParks: List<BikeParkEntity>,
     imperial: Boolean,
     recordingSettings: RecordingSettings,
     mapApiKey: String,
     mapStyle: MapStyle,
     onStart: () -> Unit,
+    onStartParkDay: (Long) -> Unit,
+    onEditParks: () -> Unit,
     onConfigureMap: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -668,6 +707,99 @@ private fun HomeScreen(
                 Icon(Icons.Default.PlayArrow, null)
                 Spacer(Modifier.width(8.dp))
                 Text("Start ride", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            }
+            if (bikeParks.isNotEmpty()) {
+                var selectedParkId by rememberSaveable(bikeParks) { mutableStateOf(bikeParks.first().id) }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onStartParkDay(selectedParkId) },
+                        modifier = Modifier.weight(1f).height(52.dp),
+                    ) {
+                        Icon(Icons.Default.DownhillSkiing, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Start ${bikeParks.firstOrNull { it.id == selectedParkId }?.name ?: "park day"}")
+                    }
+                    IconButton(onClick = onEditParks, modifier = Modifier.size(52.dp)) {
+                        Icon(Icons.Default.EditLocationAlt, "Edit bike parks")
+                    }
+                }
+                if (bikeParks.size > 1) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(bikeParks) { park ->
+                            FilterChip(
+                                selected = selectedParkId == park.id,
+                                onClick = { selectedParkId = park.id },
+                                label = { Text(park.name) },
+                            )
+                        }
+                    }
+                }
+            } else {
+                OutlinedButton(onClick = onEditParks, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.EditLocationAlt, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Set up a bike park")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ParkDayScreen(
+    live: LiveRideState,
+    points: List<TrackPointEntity>,
+    jumps: List<JumpEventEntity>,
+    mapApiKey: String,
+    mapStyle: MapStyle,
+    imperial: Boolean,
+    onEnd: () -> Unit,
+    onConfigureMap: () -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(live.bikeParkName ?: "Bike park day") },
+                actions = { TextButton(onClick = onEnd) { Text("End day") } },
+                colors = flightLogTopAppBarColors(),
+            )
+        },
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            Box(Modifier.weight(1f)) {
+                TrailMap(
+                    points = points,
+                    jumps = jumps,
+                    apiKey = mapApiKey,
+                    mapStyle = mapStyle,
+                    modifier = Modifier.fillMaxSize(),
+                    onConfigureMap = onConfigureMap,
+                    showRider = true,
+                )
+            }
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    when (live.parkDayState) {
+                        ParkDayState.WAITING_IN_SUMMIT -> "At summit · leave the zone to start"
+                        ParkDayState.PENDING_START -> "Checking route…"
+                        ParkDayState.RECORDING_RUN -> "Recording downhill run"
+                        ParkDayState.WAITING_FOR_SUMMIT -> "Run saved · waiting for summit"
+                        ParkDayState.INACTIVE -> "Starting park day…"
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                if (live.parkDayState == ParkDayState.RECORDING_RUN) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Metric("DISTANCE", formatDistance(live.distanceMeters, imperial))
+                        Metric("SPEED", formatSpeed(live.speedMps, imperial))
+                        Metric("JUMPS", live.jumpCount.toString())
+                    }
+                }
+                Text(
+                    live.gpsMessage ?: "GPS stays active between runs",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -2929,6 +3061,15 @@ private fun EmptyCard(title: String, detail: String) {
 
 private fun startRideService(context: Context) {
     ContextCompat.startForegroundService(context, Intent(context, RideTrackingService::class.java).setAction(RideTrackingService.ACTION_START))
+}
+
+private fun startParkDayService(context: Context, parkId: Long) {
+    ContextCompat.startForegroundService(
+        context,
+        Intent(context, RideTrackingService::class.java)
+            .setAction(RideTrackingService.ACTION_START_PARK)
+            .putExtra(RideTrackingService.EXTRA_PARK_ID, parkId),
+    )
 }
 
 private fun sendRideAction(context: Context, action: String) {
