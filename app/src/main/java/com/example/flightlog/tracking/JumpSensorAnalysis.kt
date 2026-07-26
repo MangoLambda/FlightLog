@@ -146,7 +146,7 @@ object JumpSensorAnalyzer {
         val pocket = mountingMode != MountingMode.BIKE_MOUNTED
         val jumpImpulse = if (pocket) 0.90 else 0.65
         val jumpPeak = if (pocket) 4.0 else 3.0
-        val dropImpulse = 0.50
+        val dropImpulse = if (pocket) 0.30 else 0.25
         val kind = when {
             impulse >= jumpImpulse && peak >= jumpPeak -> FlightKind.JUMP
             impulse <= dropImpulse && peak < jumpPeak -> FlightKind.DROP
