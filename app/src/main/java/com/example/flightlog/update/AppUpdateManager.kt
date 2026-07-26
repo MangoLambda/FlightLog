@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.FileProvider
 import com.example.flightlog.BuildConfig
 import java.io.File
@@ -100,16 +101,27 @@ class AppUpdateManager(private val context: Context) {
     private var downloadedRelease: UpdateRelease? = null
 
     suspend fun check() = withContext(Dispatchers.IO) {
-        val apiUrl = GitHubReleaseSource.latestReleaseApiUrl(BuildConfig.FLIGHTLOG_UPDATE_BASE_URL) ?: return@withContext
+        val apiUrl = GitHubReleaseSource.latestReleaseApiUrl(BuildConfig.FLIGHTLOG_UPDATE_BASE_URL)
+        if (apiUrl == null) {
+            Log.w(TAG, "Update check disabled: FLIGHTLOG_UPDATE_BASE_URL is missing or invalid")
+            return@withContext
+        }
         mutableState.value = UpdateUiState.Checking
         runCatching {
             val json = request(apiUrl)
-            val release = GitHubReleaseSource.parse(json, Build.SUPPORTED_ABIS.toList()) ?: return@runCatching null
+            val release = GitHubReleaseSource.parse(json, Build.SUPPORTED_ABIS.toList())
+            if (release == null) {
+                Log.w(TAG, "Latest release has no compatible, checksummed APK asset")
+                return@runCatching null
+            }
             if (GitHubReleaseSource.compareVersions(release.version, BuildConfig.VERSION_NAME) <= 0) return@runCatching null
             if (preferences.getString(SKIPPED_RELEASE, null) == release.tag) return@runCatching null
             release
         }.onSuccess { mutableState.value = it?.let(UpdateUiState::Available) ?: UpdateUiState.Idle }
-            .onFailure { mutableState.value = UpdateUiState.Idle }
+            .onFailure {
+                Log.w(TAG, "Update check failed", it)
+                mutableState.value = UpdateUiState.Idle
+            }
     }
 
     suspend fun download(release: UpdateRelease) = withContext(Dispatchers.IO) {
@@ -224,5 +236,8 @@ class AppUpdateManager(private val context: Context) {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private companion object { const val SKIPPED_RELEASE = "skipped_update_release" }
+    private companion object {
+        const val TAG = "FlightLogUpdate"
+        const val SKIPPED_RELEASE = "skipped_update_release"
+    }
 }

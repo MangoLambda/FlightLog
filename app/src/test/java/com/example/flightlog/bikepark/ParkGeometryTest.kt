@@ -51,6 +51,14 @@ class ParkGeometryTest {
         assertNotNull(ParkGeometry.validate(listOf(summit), listOf(bottom), listOf(bottom.copy(type = ParkZoneType.EXCLUSION))))
     }
 
+    @Test
+    fun nearestPointRequiresPointInsideEraseRadius() {
+        val points = listOf(10.0 to 10.0, 40.0 to 40.0, 100.0 to 100.0)
+
+        assertEquals(1, nearestPointIndex(points, 43.0, 44.0, 8.0))
+        assertEquals(null, nearestPointIndex(points, 70.0, 70.0, 8.0))
+    }
+
     private fun square(latitude: Double, longitude: Double, size: Double) = listOf(
         GeoPoint(latitude, longitude),
         GeoPoint(latitude, longitude + size),

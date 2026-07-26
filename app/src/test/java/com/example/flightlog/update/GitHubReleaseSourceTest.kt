@@ -37,6 +37,11 @@ class GitHubReleaseSourceTest {
         assertNull(GitHubReleaseSource.parse(releaseJson().replace("sha256:$DIGEST", ""), listOf("x86_64")))
     }
 
+    @Test fun rejectsUnversionedGradleOutputNames() {
+        val json = releaseJson().replace("FlightLog-v1.2.0-", "app-").replace("-universal.apk", "-release.apk")
+        assertNull(GitHubReleaseSource.parse(json, listOf("arm64-v8a")))
+    }
+
     private fun releaseJson(prerelease: Boolean = false) = """
         {
           "tag_name": "v1.2.0",

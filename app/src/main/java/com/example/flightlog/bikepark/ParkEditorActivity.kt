@@ -22,6 +22,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -37,6 +38,7 @@ import com.example.flightlog.maps.MapProvider
 import com.example.flightlog.maps.MapStyleStore
 import com.example.flightlog.ui.theme.FlightLogTheme
 import com.google.android.gms.location.*
+import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.launch
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -73,6 +75,8 @@ class ParkEditorActivity : ComponentActivity() {
     }
 }
 
+private enum class ParkMapMode { MOVE, DRAW, ERASE }
+
 @Composable
 private fun ParkEditorScreen(
     loadParks: () -> kotlinx.coroutines.flow.Flow<List<BikeParkEntity>>,
@@ -83,6 +87,7 @@ private fun ParkEditorScreen(
 ) {
     val parks by remember { loadParks() }.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
+    var showingEditor by rememberSaveable { mutableStateOf(false) }
     var parkId by rememberSaveable { mutableStateOf<Long?>(null) }
     var name by rememberSaveable { mutableStateOf("") }
     var zones by remember { mutableStateOf<List<ParkZoneDraft>>(emptyList()) }
@@ -92,6 +97,14 @@ private fun ParkEditorScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var recordingGps by remember { mutableStateOf(false) }
     var recordedPath by remember { mutableStateOf<List<GeoPoint>>(emptyList()) }
+    var mapMode by rememberSaveable { mutableStateOf(ParkMapMode.MOVE) }
+    var editingZone by remember { mutableStateOf<ParkZoneDraft?>(null) }
+    var locationCenter by remember { mutableStateOf<GeoPoint?>(null) }
+    var locationCameraKey by rememberSaveable { mutableIntStateOf(0) }
+    var locationRequestKey by rememberSaveable { mutableIntStateOf(0) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    var startGpsAfterPermission by remember { mutableStateOf(false) }
+    var gpsPermissionKey by remember { mutableIntStateOf(0) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val locationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
     val callback = remember {
@@ -106,8 +119,38 @@ private fun ParkEditorScreen(
     DisposableEffect(Unit) {
         onDispose { locationClient.removeLocationUpdates(callback) }
     }
+    fun centerOnCurrentLocation() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            error = "Precise location permission is needed to center the map"
+            return
+        }
+        val cancellation = CancellationTokenSource()
+        locationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellation.token)
+            .addOnSuccessListener { location ->
+                if (location != null) {
+                    locationCenter = GeoPoint(location.latitude, location.longitude)
+                    locationCameraKey++
+                    error = null
+                } else {
+                    locationClient.lastLocation.addOnSuccessListener { last ->
+                        if (last != null) {
+                            locationCenter = GeoPoint(last.latitude, last.longitude)
+                            locationCameraKey++
+                        }
+                        else error = "Current location is unavailable; you can still move the map manually"
+                    }
+                }
+            }
+            .addOnFailureListener { error = "Current location is unavailable; you can still move the map manually" }
+    }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (!granted) error = "Precise location permission is required for GPS capture"
+        if (granted) {
+            if (startGpsAfterPermission) {
+                startGpsAfterPermission = false
+                gpsPermissionKey++
+            } else centerOnCurrentLocation()
+        }
+        else error = "Precise location permission is required for GPS features"
     }
 
     fun stopGpsRecording() {
@@ -127,6 +170,7 @@ private fun ParkEditorScreen(
     fun startGpsRecording() {
         zoneType = ParkZoneType.EXCLUSION
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            startGpsAfterPermission = true
             permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
             return
         }
@@ -142,6 +186,23 @@ private fun ParkEditorScreen(
         }
     }
 
+    LaunchedEffect(gpsPermissionKey) {
+        if (gpsPermissionKey > 0 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        ) {
+            startGpsRecording()
+        }
+    }
+
+    LaunchedEffect(showingEditor, parkId, locationRequestKey) {
+        if (!showingEditor || parkId != null) return@LaunchedEffect
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            centerOnCurrentLocation()
+        } else {
+            permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
     LaunchedEffect(parkId) {
         val loaded = parkId?.let { loadPark(it) } ?: return@LaunchedEffect
         name = loaded.first.name
@@ -149,11 +210,103 @@ private fun ParkEditorScreen(
             ParkZoneDraft(it.id, it.name, it.type, ParkGeometry.decode(it.encodedVertices), it.corridorWidthMeters)
         }
         drawing = emptyList()
+        editingZone = null
+        mapMode = ParkMapMode.MOVE
+    }
+
+    fun resetDraft() {
+        drawing = emptyList()
+        editingZone = null
+        recordedPath = emptyList()
+        mapMode = ParkMapMode.MOVE
+        if (recordingGps) {
+            locationClient.removeLocationUpdates(callback)
+            recordingGps = false
+        }
+    }
+
+    fun finishZone() {
+        if (drawing.size < 3) {
+            error = "Add at least three points"
+            return
+        }
+        val original = editingZone
+        val completed = (original ?: ParkZoneDraft(
+            name = "${zoneType.name.lowercase().replaceFirstChar(Char::uppercase)} ${zones.count { it.type == zoneType } + 1}",
+            type = zoneType,
+            vertices = emptyList(),
+        )).copy(type = zoneType, vertices = drawing)
+        zones = if (original == null) zones + completed else zones.map { if (it === original) completed else it }
+        resetDraft()
+        error = null
+    }
+
+    if (!showingEditor) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Bike parks") },
+                    navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close") } },
+                )
+            },
+            floatingActionButton = {
+                ExtendedFloatingActionButton(
+                    onClick = {
+                        parkId = null
+                        name = ""
+                        zones = emptyList()
+                        resetDraft()
+                        locationCenter = null
+                        locationRequestKey++
+                        showingEditor = true
+                    },
+                    icon = { Icon(Icons.Default.Add, null) },
+                    text = { Text("New park") },
+                )
+            },
+        ) { padding ->
+            if (parks.isEmpty()) {
+                Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                    Text("No saved bike parks yet")
+                }
+            } else {
+                LazyColumn(
+                    Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(parks, key = { it.id }) { park ->
+                        Card(onClick = {
+                            parkId = park.id
+                            locationCenter = null
+                            resetDraft()
+                            showingEditor = true
+                        }) {
+                            ListItem(
+                                headlineContent = { Text(park.name) },
+                                supportingContent = { Text("Tap to view and edit") },
+                                trailingContent = { Icon(Icons.Default.Edit, "Edit ${park.name}") },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return
     }
 
     val mapContent: @Composable () -> Unit = {
         Box(Modifier.fillMaxSize()) {
-            ParkZoneMap(zones, drawing, recordedPath) { drawing = drawing + it }
+            ParkZoneMap(
+                zones = zones,
+                drawing = drawing,
+                recordedPath = recordedPath,
+                mode = mapMode,
+                locationCenter = locationCenter,
+                locationCameraKey = locationCameraKey,
+                focusKey = parkId ?: -locationRequestKey.toLong() - 1,
+                onDraw = { drawing = drawing + it },
+                onErase = { index -> drawing = drawing.filterIndexed { candidate, _ -> candidate != index } },
+            )
             Column(
                 Modifier.align(Alignment.TopEnd).padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -166,6 +319,15 @@ private fun ParkEditorScreen(
                         Icon(Icons.Default.Undo, "Undo point")
                     }
                 }
+                SmallFloatingActionButton(onClick = {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                        centerOnCurrentLocation()
+                    } else {
+                        permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                    }
+                }) {
+                    Icon(Icons.Default.MyLocation, "Center map on current location")
+                }
             }
             if (fullScreen) {
                 Surface(
@@ -173,18 +335,8 @@ private fun ParkEditorScreen(
                     tonalElevation = 4.dp,
                 ) {
                     ZoneDrawingControls(
-                        zoneType, { zoneType = it }, drawing.size, recordingGps,
-                        onFinish = {
-                            if (drawing.size < 3) error = "Add at least three points"
-                            else {
-                                zones = zones + ParkZoneDraft(
-                                    name = "${zoneType.name.lowercase().replaceFirstChar(Char::uppercase)} ${zones.count { it.type == zoneType } + 1}",
-                                    type = zoneType,
-                                    vertices = drawing,
-                                )
-                                drawing = emptyList()
-                            }
-                        },
+                        zoneType, { zoneType = it }, drawing.size, recordingGps, mapMode, { mapMode = it },
+                        editingZone != null, ::finishZone, ::resetDraft,
                         onGps = { if (recordingGps) stopGpsRecording() else startGpsRecording() },
                     )
                 }
@@ -201,12 +353,12 @@ private fun ParkEditorScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Bike park editor") },
-                navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close") } },
+                navigationIcon = { IconButton(onClick = { resetDraft(); showingEditor = false }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Bike parks") } },
                 actions = {
                     TextButton(onClick = {
                         scope.launch {
                             runCatching { savePark(parkId, name, zones) }
-                                .onSuccess { parkId = it; error = null }
+                                .onSuccess { parkId = it; error = null; resetDraft(); showingEditor = false }
                                 .onFailure { error = it.message ?: "Could not save park" }
                         }
                     }) { Text("Save") }
@@ -223,30 +375,10 @@ private fun ParkEditorScreen(
                 item {
                     OutlinedTextField(name, { name = it }, label = { Text("Park name") }, modifier = Modifier.fillMaxWidth())
                 }
-                if (parks.isNotEmpty()) {
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            parks.forEach { park ->
-                                FilterChip(selected = parkId == park.id, onClick = { parkId = park.id }, label = { Text(park.name) })
-                            }
-                            AssistChip(onClick = { parkId = null; name = ""; zones = emptyList() }, label = { Text("New") })
-                        }
-                    }
-                }
                 item {
                     ZoneDrawingControls(
-                        zoneType, { zoneType = it }, drawing.size, recordingGps,
-                        onFinish = {
-                            if (drawing.size < 3) error = "Add at least three points"
-                            else {
-                                zones = zones + ParkZoneDraft(
-                                    name = "${zoneType.name.lowercase().replaceFirstChar(Char::uppercase)} ${zones.count { it.type == zoneType } + 1}",
-                                    type = zoneType,
-                                    vertices = drawing,
-                                )
-                                drawing = emptyList()
-                            }
-                        },
+                        zoneType, { zoneType = it }, drawing.size, recordingGps, mapMode, { mapMode = it },
+                        editingZone != null, ::finishZone, ::resetDraft,
                         onGps = { if (recordingGps) stopGpsRecording() else startGpsRecording() },
                     )
                 }
@@ -259,7 +391,8 @@ private fun ParkEditorScreen(
                                 IconButton(onClick = {
                                     drawing = zone.vertices
                                     zoneType = zone.type
-                                    zones = zones - zone
+                                    editingZone = zone
+                                    mapMode = ParkMapMode.DRAW
                                 }) { Icon(Icons.Default.Edit, "Edit zone") }
                             },
                             trailingContent = {
@@ -289,19 +422,33 @@ private fun ParkEditorScreen(
                 error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
                 if (parkId != null) {
                     item {
-                        TextButton(onClick = {
-                            val deleting = parkId ?: return@TextButton
-                            scope.launch {
-                                deletePark(deleting)
-                                parkId = null
-                                name = ""
-                                zones = emptyList()
-                            }
-                        }) { Text("Delete park", color = MaterialTheme.colorScheme.error) }
+                        TextButton(onClick = { confirmDelete = true }) { Text("Delete park", color = MaterialTheme.colorScheme.error) }
                     }
                 }
             }
         }
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete bike park?") },
+            text = { Text("This permanently deletes the park and all of its zones.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    val deleting = parkId ?: return@TextButton
+                    scope.launch {
+                        deletePark(deleting)
+                        parkId = null
+                        name = ""
+                        zones = emptyList()
+                        resetDraft()
+                        showingEditor = false
+                    }
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -311,7 +458,11 @@ private fun ZoneDrawingControls(
     onType: (ParkZoneType) -> Unit,
     pointCount: Int,
     recordingGps: Boolean,
+    mode: ParkMapMode,
+    onMode: (ParkMapMode) -> Unit,
+    editing: Boolean,
     onFinish: () -> Unit,
+    onCancel: () -> Unit,
     onGps: () -> Unit,
 ) {
     Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -324,8 +475,29 @@ private fun ZoneDrawingControls(
                 ) { Text(value.name.lowercase().replaceFirstChar(Char::uppercase)) }
             }
         }
+        SingleChoiceSegmentedButtonRow {
+            ParkMapMode.entries.forEachIndexed { index, value ->
+                SegmentedButton(
+                    selected = mode == value,
+                    onClick = { onMode(value) },
+                    shape = SegmentedButtonDefaults.itemShape(index, ParkMapMode.entries.size),
+                ) {
+                    Icon(
+                        when (value) {
+                            ParkMapMode.MOVE -> Icons.Default.PanTool
+                            ParkMapMode.DRAW -> Icons.Default.Draw
+                            ParkMapMode.ERASE -> Icons.Default.Delete
+                        },
+                        null,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(value.name.lowercase().replaceFirstChar(Char::uppercase))
+                }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onFinish, enabled = pointCount >= 3) { Text("Finish zone ($pointCount)") }
+            if (editing || pointCount > 0) TextButton(onClick = onCancel) { Text("Cancel") }
             OutlinedButton(onClick = onGps) {
                 Icon(if (recordingGps) Icons.Default.Stop else Icons.Default.GpsFixed, null)
                 Spacer(Modifier.width(6.dp))
@@ -340,7 +512,12 @@ private fun ParkZoneMap(
     zones: List<ParkZoneDraft>,
     drawing: List<GeoPoint>,
     recordedPath: List<GeoPoint>,
-    onMapClick: (GeoPoint) -> Unit,
+    mode: ParkMapMode,
+    locationCenter: GeoPoint?,
+    locationCameraKey: Int,
+    focusKey: Long,
+    onDraw: (GeoPoint) -> Unit,
+    onErase: (Int) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -349,7 +526,12 @@ private fun ParkZoneMap(
     }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     val view = remember { MapView(context) }
-    val clickListener = rememberUpdatedState(onMapClick)
+    val currentMode = rememberUpdatedState(mode)
+    val currentDrawing = rememberUpdatedState(drawing)
+    val drawListener = rememberUpdatedState(onDraw)
+    val eraseListener = rememberUpdatedState(onErase)
+    val eraseRadius = with(LocalDensity.current) { 32.dp.toPx() }
+    var handledLocationCameraKey by remember { mutableIntStateOf(-1) }
 
     DisposableEffect(lifecycle, view) {
         val observer = LifecycleEventObserver { _, event ->
@@ -373,8 +555,23 @@ private fun ParkZoneMap(
                 style.addSource(GeoJsonSource("park-drawing"))
                 style.addLayer(LineLayer("park-drawing-line", "park-drawing").withProperties(lineColor("#ffffff"), lineWidth(4f)))
                 ready.addOnMapClickListener { coordinate ->
-                    clickListener.value(GeoPoint(coordinate.latitude, coordinate.longitude))
-                    true
+                    when (currentMode.value) {
+                        ParkMapMode.MOVE -> false
+                        ParkMapMode.DRAW -> {
+                            drawListener.value(GeoPoint(coordinate.latitude, coordinate.longitude))
+                            true
+                        }
+                        ParkMapMode.ERASE -> {
+                            val tapped = ready.projection.toScreenLocation(coordinate)
+                            val projected = currentDrawing.value.map { point ->
+                                val screen = ready.projection.toScreenLocation(LatLng(point.latitude, point.longitude))
+                                screen.x.toDouble() to screen.y.toDouble()
+                            }
+                            nearestPointIndex(projected, tapped.x.toDouble(), tapped.y.toDouble(), eraseRadius.toDouble())
+                                ?.let(eraseListener.value)
+                            true
+                        }
+                    }
                 }
             }
         }
@@ -393,8 +590,19 @@ private fun ParkZoneMap(
                 org.maplibre.geojson.LineString.fromLngLats(line.map { Point.fromLngLat(it.longitude, it.latitude) }),
             )),
         )
-        val all = zones.flatMap { it.vertices } + drawing + recordedPath
-        if (all.isNotEmpty()) {
+    }
+    LaunchedEffect(map, focusKey, locationCameraKey, zones) {
+        val ready = map ?: return@LaunchedEffect
+        val all = zones.flatMap { it.vertices }
+        if (locationCenter != null && locationCameraKey != handledLocationCameraKey) {
+            handledLocationCameraKey = locationCameraKey
+            ready.animateCamera(CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(LatLng(locationCenter.latitude, locationCenter.longitude))
+                    .zoom(16.0)
+                    .build(),
+            ), 350)
+        } else if (all.isNotEmpty()) {
             val bounds = LatLngBounds.Builder().includes(all.map { LatLng(it.latitude, it.longitude) }).build()
             ready.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 80), 250)
         }

@@ -1,5 +1,6 @@
 package com.example.flightlog.bikepark
 
+import kotlin.math.hypot
 import kotlin.math.abs
 import kotlin.math.cos
 
@@ -132,3 +133,13 @@ object ParkGeometry {
             abs(o4) < 1e-12 && onSegment(c, b, d)
     }
 }
+internal fun nearestPointIndex(
+    points: List<Pair<Double, Double>>,
+    x: Double,
+    y: Double,
+    maximumDistance: Double,
+): Int? = points.indices
+    .map { index -> index to hypot(points[index].first - x, points[index].second - y) }
+    .minByOrNull { it.second }
+    ?.takeIf { it.second <= maximumDistance }
+    ?.first
