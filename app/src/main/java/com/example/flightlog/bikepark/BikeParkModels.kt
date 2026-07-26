@@ -22,6 +22,43 @@ fun ParkDayState.samplingProfile(): ParkSamplingProfile = when (this) {
         ParkSamplingProfile.NORMAL
 }
 
+internal class SummitZoneTracker(
+    private val arrivalFixes: Int = 1,
+    private val departureFixes: Int = 2,
+) {
+    private var insideFixes = 0
+    private var outsideFixes = 0
+
+    fun observe(state: ParkDayState, inSummit: Boolean): ParkDayState {
+        return when (state) {
+            ParkDayState.WAITING_FOR_SUMMIT -> {
+                insideFixes = if (inSummit) insideFixes + 1 else 0
+                if (insideFixes >= arrivalFixes) {
+                    outsideFixes = 0
+                    ParkDayState.WAITING_IN_SUMMIT
+                } else {
+                    state
+                }
+            }
+            ParkDayState.WAITING_IN_SUMMIT -> {
+                if (inSummit) {
+                    outsideFixes = 0
+                    state
+                } else {
+                    outsideFixes++
+                    if (outsideFixes >= departureFixes) {
+                        insideFixes = 0
+                        ParkDayState.PENDING_START
+                    } else {
+                        state
+                    }
+                }
+            }
+            else -> state
+        }
+    }
+}
+
 data class GeoPoint(val latitude: Double, val longitude: Double)
 
 data class ParkZoneDraft(

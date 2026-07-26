@@ -49,6 +49,7 @@ import com.example.flightlog.bikepark.ParkDayState
 import com.example.flightlog.bikepark.ParkGeometry
 import com.example.flightlog.bikepark.ParkSamplingProfile
 import com.example.flightlog.bikepark.ParkZoneType
+import com.example.flightlog.bikepark.SummitZoneTracker
 import com.example.flightlog.bikepark.samplingProfile
 import com.example.flightlog.data.ParkZoneEntity
 
@@ -80,8 +81,7 @@ class RideTrackingService : Service(), SensorEventListener {
     private var bikeParkName: String? = null
     private var parkZones: List<ParkZoneEntity> = emptyList()
     private var parkDayState = ParkDayState.INACTIVE
-    private var summitInsideFixes = 0
-    private var summitOutsideFixes = 0
+    private val summitZoneTracker = SummitZoneTracker()
     private var bottomInsideFixes = 0
     private var pendingStartedAt = 0L
     private val pendingLocations = ArrayDeque<Location>()
@@ -485,18 +485,11 @@ class RideTrackingService : Service(), SensorEventListener {
         val previousParkDayState = parkDayState
         when (parkDayState) {
             ParkDayState.WAITING_IN_SUMMIT, ParkDayState.WAITING_FOR_SUMMIT -> {
-                if (inSummit) summitInsideFixes++ else summitInsideFixes = 0
-                if (summitInsideFixes >= PARK_CONFIRMATION_FIXES) {
-                    parkDayState = ParkDayState.WAITING_IN_SUMMIT
-                    summitOutsideFixes = 0
-                } else if (parkDayState == ParkDayState.WAITING_IN_SUMMIT && !inSummit) {
-                    summitOutsideFixes++
-                    if (summitOutsideFixes >= PARK_CONFIRMATION_FIXES) {
-                        parkDayState = ParkDayState.PENDING_START
-                        pendingStartedAt = location.time
-                        pendingLocations.clear()
-                        pendingLocations += Location(location)
-                    }
+                parkDayState = summitZoneTracker.observe(parkDayState, inSummit)
+                if (parkDayState == ParkDayState.PENDING_START) {
+                    pendingStartedAt = location.time
+                    pendingLocations.clear()
+                    pendingLocations += Location(location)
                 }
             }
             ParkDayState.PENDING_START -> {
@@ -504,7 +497,11 @@ class RideTrackingService : Service(), SensorEventListener {
                 while (pendingLocations.size > PARK_PENDING_POINT_LIMIT) pendingLocations.removeFirst()
                 if (inExclusion || inSummit) {
                     pendingLocations.clear()
-                    parkDayState = if (inSummit) ParkDayState.WAITING_IN_SUMMIT else ParkDayState.WAITING_FOR_SUMMIT
+                    parkDayState = if (inSummit) {
+                        summitZoneTracker.observe(ParkDayState.WAITING_IN_SUMMIT, inSummit = true)
+                    } else {
+                        ParkDayState.WAITING_FOR_SUMMIT
+                    }
                 } else if (location.time - pendingStartedAt >= PARK_PENDING_WINDOW_MILLIS) {
                     beginAutomaticRun()
                 }
