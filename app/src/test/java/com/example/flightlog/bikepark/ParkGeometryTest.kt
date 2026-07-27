@@ -59,6 +59,15 @@ class ParkGeometryTest {
         assertEquals(null, nearestPointIndex(points, 70.0, 70.0, 8.0))
     }
 
+    @Test
+    fun dragPointSamplingRequiresMinimumScreenDistance() {
+        val previous = 10f to 10f
+
+        assertFalse(shouldAppendDrawPoint(previous, 15f to 15f, 10f))
+        assertTrue(shouldAppendDrawPoint(previous, 16f to 18f, 10f))
+        assertTrue(shouldAppendDrawPoint(previous, 20f to 10f, 10f))
+    }
+
     private fun square(latitude: Double, longitude: Double, size: Double) = listOf(
         GeoPoint(latitude, longitude),
         GeoPoint(latitude, longitude + size),

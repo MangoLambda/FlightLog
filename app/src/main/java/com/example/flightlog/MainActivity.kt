@@ -88,6 +88,7 @@ import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.TrailState
 import com.example.flightlog.domain.RideState
 import com.example.flightlog.domain.FeatureAssignmentState
+import com.example.flightlog.ui.GondolaLiftIcon
 import com.example.flightlog.maps.MapApiKeyStore
 import com.example.flightlog.maps.MapTileCache
 import com.example.flightlog.maps.TileCacheState
@@ -716,7 +717,7 @@ private fun HomeScreen(
                         onClick = { onStartParkDay(selectedParkId) },
                         modifier = Modifier.weight(1f).height(52.dp),
                     ) {
-                        Icon(Icons.Default.DownhillSkiing, null)
+                        Icon(GondolaLiftIcon, null)
                         Spacer(Modifier.width(8.dp))
                         Text("Start ${bikeParks.firstOrNull { it.id == selectedParkId }?.name ?: "park day"}")
                     }

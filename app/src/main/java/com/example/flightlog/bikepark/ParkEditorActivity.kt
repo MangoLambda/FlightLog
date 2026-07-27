@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Bundle
 import android.os.Looper
+import android.graphics.PointF
+import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -466,21 +468,24 @@ private fun ZoneDrawingControls(
     onGps: () -> Unit,
 ) {
     Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SingleChoiceSegmentedButtonRow {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             ParkZoneType.entries.forEachIndexed { index, value ->
                 SegmentedButton(
+                    modifier = Modifier.weight(1f),
                     selected = type == value,
                     onClick = { onType(value) },
                     shape = SegmentedButtonDefaults.itemShape(index, ParkZoneType.entries.size),
                 ) { Text(value.name.lowercase().replaceFirstChar(Char::uppercase)) }
             }
         }
-        SingleChoiceSegmentedButtonRow {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             ParkMapMode.entries.forEachIndexed { index, value ->
                 SegmentedButton(
+                    modifier = Modifier.weight(1f),
                     selected = mode == value,
                     onClick = { onMode(value) },
                     shape = SegmentedButtonDefaults.itemShape(index, ParkMapMode.entries.size),
+                    contentPadding = PaddingValues(horizontal = 8.dp),
                 ) {
                     Icon(
                         when (value) {
@@ -489,8 +494,9 @@ private fun ZoneDrawingControls(
                             ParkMapMode.ERASE -> Icons.Default.Delete
                         },
                         null,
+                        Modifier.size(18.dp),
                     )
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(value.name.lowercase().replaceFirstChar(Char::uppercase))
                 }
             }
@@ -531,7 +537,50 @@ private fun ParkZoneMap(
     val drawListener = rememberUpdatedState(onDraw)
     val eraseListener = rememberUpdatedState(onErase)
     val eraseRadius = with(LocalDensity.current) { 32.dp.toPx() }
+    val drawSpacing = with(LocalDensity.current) { 10.dp.toPx() }
     var handledLocationCameraKey by remember { mutableIntStateOf(-1) }
+
+    DisposableEffect(view) {
+        var lastDrawPoint: Pair<Float, Float>? = null
+        var drawingGesture = false
+        view.setOnTouchListener { _, event ->
+            if (currentMode.value != ParkMapMode.DRAW) {
+                drawingGesture = false
+                lastDrawPoint = null
+                return@setOnTouchListener false
+            }
+
+            fun appendPoint(x: Float, y: Float) {
+                val previous = lastDrawPoint
+                if (previous == null || shouldAppendDrawPoint(previous, x to y, drawSpacing)) {
+                    val coordinate = map?.projection?.fromScreenLocation(PointF(x, y)) ?: return
+                    drawListener.value(GeoPoint(coordinate.latitude, coordinate.longitude))
+                    lastDrawPoint = x to y
+                }
+            }
+
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    drawingGesture = true
+                    lastDrawPoint = null
+                    appendPoint(event.x, event.y)
+                }
+                MotionEvent.ACTION_MOVE -> if (drawingGesture && event.pointerCount == 1) {
+                    for (index in 0 until event.historySize) {
+                        appendPoint(event.getHistoricalX(index), event.getHistoricalY(index))
+                    }
+                    appendPoint(event.x, event.y)
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> drawingGesture = false
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    drawingGesture = false
+                    lastDrawPoint = null
+                }
+            }
+            true
+        }
+        onDispose { view.setOnTouchListener(null) }
+    }
 
     DisposableEffect(lifecycle, view) {
         val observer = LifecycleEventObserver { _, event ->
@@ -557,10 +606,7 @@ private fun ParkZoneMap(
                 ready.addOnMapClickListener { coordinate ->
                     when (currentMode.value) {
                         ParkMapMode.MOVE -> false
-                        ParkMapMode.DRAW -> {
-                            drawListener.value(GeoPoint(coordinate.latitude, coordinate.longitude))
-                            true
-                        }
+                        ParkMapMode.DRAW -> true
                         ParkMapMode.ERASE -> {
                             val tapped = ready.projection.toScreenLocation(coordinate)
                             val projected = currentDrawing.value.map { point ->
@@ -608,6 +654,16 @@ private fun ParkZoneMap(
         }
     }
     AndroidView({ view }, Modifier.fillMaxSize())
+}
+
+internal fun shouldAppendDrawPoint(
+    previous: Pair<Float, Float>,
+    candidate: Pair<Float, Float>,
+    minimumDistancePixels: Float,
+): Boolean {
+    val deltaX = candidate.first - previous.first
+    val deltaY = candidate.second - previous.second
+    return deltaX * deltaX + deltaY * deltaY >= minimumDistancePixels * minimumDistancePixels
 }
 
 private fun addZoneLayers(style: Style, type: ParkZoneType) {
