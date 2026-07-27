@@ -87,6 +87,7 @@ import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.TrailState
 import com.example.flightlog.domain.RideState
+import com.example.flightlog.domain.RideTotals
 import com.example.flightlog.domain.FeatureAssignmentState
 import com.example.flightlog.ui.GondolaLiftIcon
 import com.example.flightlog.maps.MapApiKeyStore
@@ -2607,6 +2608,11 @@ private fun StatsScreen(rides: List<RideEntity>, jumps: List<JumpEventEntity>, i
         AggregatePeriod.SEASON -> RideMath.aggregate(rides, jumps, year.first, year.last + 1)
         AggregatePeriod.LIFETIME -> RideMath.aggregate(rides, jumps)
     }
+    val dailyTotals = when (period) {
+        AggregatePeriod.DAY -> RideMath.aggregateByDay(rides, jumps, today, tomorrow, zone)
+        AggregatePeriod.SEASON -> RideMath.aggregateByDay(rides, jumps, year.first, year.last + 1, zone)
+        AggregatePeriod.LIFETIME -> RideMath.aggregateByDay(rides, jumps, zoneId = zone)
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Text("Your stats", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold) }
         item {
@@ -2618,26 +2624,49 @@ private fun StatsScreen(rides: List<RideEntity>, jumps: List<JumpEventEntity>, i
                 }
             }
         }
-        item {
-            Card {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                    Text("Trail", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Metric("RIDES", totals.rides.toString())
-                        Metric("DISTANCE", formatDistance(totals.distanceMeters, imperial))
-                        Metric("TIME", formatDuration(totals.movingTimeMillis))
-                    }
-                    HorizontalDivider()
-                    Text("Flight", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Metric("JUMPS", totals.confirmedJumps.toString())
-                        Metric("DROPS", totals.confirmedDrops.toString())
-                        Metric("AIRTIME", String.format(Locale.US, "%.1fs", totals.flightTimeSeconds))
-                        Metric("FLOWN", formatDistance(totals.jumpedDistanceMeters, imperial))
-                    }
-                    Text("${totals.confirmedUncertainFlights} uncertain • ${totals.pendingJumps} pending • ${totals.rejectedJumps} discarded", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+        item { StatsCard(totals, imperial) }
+        item { Text("Daily history", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        if (dailyTotals.isEmpty()) {
+            item { EmptyCard("No activity in this period", "Completed rides will appear here grouped by day.") }
+        } else {
+            items(dailyTotals, key = { it.date.toEpochDay() }) { daily ->
+                StatsCard(
+                    totals = daily.totals,
+                    imperial = imperial,
+                    title = if (daily.date == LocalDate.now(zone)) {
+                        "Today"
+                    } else {
+                        daily.date.format(DateTimeFormatter.ofPattern("EEEE, MMM d, yyyy"))
+                    },
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun StatsCard(totals: RideTotals, imperial: Boolean, title: String? = null) {
+    Card {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            title?.let { Text(it, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            Text("Trail", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Metric("RIDES", totals.rides.toString())
+                Metric("DISTANCE", formatDistance(totals.distanceMeters, imperial))
+                Metric("TIME", formatDuration(totals.movingTimeMillis))
+            }
+            HorizontalDivider()
+            Text("Flight", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Metric("JUMPS", totals.confirmedJumps.toString())
+                Metric("DROPS", totals.confirmedDrops.toString())
+                Metric("AIRTIME", String.format(Locale.US, "%.1fs", totals.flightTimeSeconds))
+                Metric("FLOWN", formatDistance(totals.jumpedDistanceMeters, imperial))
+            }
+            Text(
+                "${totals.confirmedUncertainFlights} uncertain • ${totals.pendingJumps} pending • ${totals.rejectedJumps} discarded",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

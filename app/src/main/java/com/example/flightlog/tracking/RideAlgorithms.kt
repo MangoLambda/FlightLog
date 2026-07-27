@@ -9,6 +9,7 @@ import com.example.flightlog.domain.MountingMode
 import com.example.flightlog.domain.RideTotals
 import com.example.flightlog.domain.SensorQuality
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import kotlin.math.*
 
@@ -18,6 +19,11 @@ data class LocationSample(
     val longitude: Double,
     val accuracyMeters: Float,
     val speedMps: Double,
+)
+
+data class DailyRideTotals(
+    val date: LocalDate,
+    val totals: RideTotals,
 )
 
 object RideMath {
@@ -104,6 +110,24 @@ object RideMath {
         val endExclusive = java.time.LocalDate.of(year + 1, 1, 1).atStartOfDay(zoneId).toInstant().toEpochMilli()
         return start until endExclusive
     }
+
+    fun aggregateByDay(
+        rides: List<RideEntity>,
+        jumps: List<JumpEventEntity>,
+        fromInclusive: Long = Long.MIN_VALUE,
+        toExclusive: Long = Long.MAX_VALUE,
+        zoneId: ZoneId = ZoneId.systemDefault(),
+    ): List<DailyRideTotals> = rides
+        .asSequence()
+        .filter { it.startedAt in fromInclusive until toExclusive }
+        .groupBy { Instant.ofEpochMilli(it.startedAt).atZone(zoneId).toLocalDate() }
+        .keys
+        .sortedDescending()
+        .map { date ->
+            val dayStart = date.atStartOfDay(zoneId).toInstant().toEpochMilli()
+            val nextDayStart = date.plusDays(1).atStartOfDay(zoneId).toInstant().toEpochMilli()
+            DailyRideTotals(date, aggregate(rides, jumps, dayStart, nextDayStart))
+        }
 }
 
 class JumpDetector(

@@ -6,6 +6,7 @@ import com.example.flightlog.domain.JumpStatus
 import com.example.flightlog.domain.FlightKind
 import com.example.flightlog.domain.SensorQuality
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -66,6 +67,29 @@ class RideMathTest {
         val bounds = RideMath.calendarYearBounds(instant, ZoneId.of("America/Montreal"))
         assertTrue(instant in bounds)
         assertEquals(java.time.LocalDate.of(2026, 1, 1), java.time.Instant.ofEpochMilli(bounds.first).atZone(ZoneId.of("America/Montreal")).toLocalDate())
+    }
+
+    @Test fun dailyHistoryGroupsRidesByLocalDayNewestFirst() {
+        val zone = ZoneId.of("America/New_York")
+        fun timestamp(day: Int, hour: Int) = ZonedDateTime.of(2026, 3, day, hour, 0, 0, 0, zone)
+            .toInstant().toEpochMilli()
+        val rides = listOf(
+            RideEntity(id = 1, startedAt = timestamp(7, 23), distanceMeters = 1_000.0),
+            RideEntity(id = 2, startedAt = timestamp(8, 1), distanceMeters = 2_000.0),
+            RideEntity(id = 3, startedAt = timestamp(8, 18), distanceMeters = 3_000.0),
+        )
+        val jump = JumpEventEntity(
+            rideId = 2, takeoffAt = timestamp(8, 1), landingAt = timestamp(8, 1) + 500,
+            estimatedFlightSeconds = .5, estimatedHeightMeters = .3, estimatedDistanceMeters = 4.0,
+            confidence = 80, sensorQuality = SensorQuality.FULL, estimatedFlightKind = FlightKind.JUMP,
+        )
+
+        val days = RideMath.aggregateByDay(rides, listOf(jump), zoneId = zone)
+
+        assertEquals(listOf(java.time.LocalDate.of(2026, 3, 8), java.time.LocalDate.of(2026, 3, 7)), days.map { it.date })
+        assertEquals(2, days.first().totals.rides)
+        assertEquals(5_000.0, days.first().totals.distanceMeters, 0.0)
+        assertEquals(1, days.first().totals.confirmedJumps)
     }
 
     @Test fun correctingFlightTypeAlsoChangesItsDisplayedHeightModel() {
