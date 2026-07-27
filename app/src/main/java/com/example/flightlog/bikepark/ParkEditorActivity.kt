@@ -486,6 +486,7 @@ private fun ZoneDrawingControls(
                     onClick = { onMode(value) },
                     shape = SegmentedButtonDefaults.itemShape(index, ParkMapMode.entries.size),
                     contentPadding = PaddingValues(horizontal = 8.dp),
+                    icon = {},
                 ) {
                     Icon(
                         when (value) {
